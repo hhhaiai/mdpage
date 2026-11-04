@@ -1,0 +1,21 @@
+{
+  "name": "simimd",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A browser-based Markdown editor for GitHub Pages and Cloudflare.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "npm run build && wrangler dev",
+    "dev:pages": "npm run build && wrangler pages dev dist",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:pages": "npm run build && wrangler pages deploy dist --project-name simimd --branch main",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "wrangler": "4.115.0"
+  }
+}

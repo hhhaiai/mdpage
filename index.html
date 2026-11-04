@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="在浏览器中编辑、预览并导出 Markdown 文档。" />
+  <title>Markdown小助手</title>
+  <link rel="icon" type="image/x-icon" href="imgage/icon.ico" />
+
+  <!-- 外部样式库 -->
+  <link href="https://cdn.jsdelivr.net/npm/normalize.css@8/normalize.css" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/neo.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <!-- 自定义样式 -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+  <header>
+    <div style="font-weight: bold; font-size: 18px;">Markdown小助手</div>
+    <div class="toolbar">
+      <button id="header-preview-btn" onclick="toggleWideMode()">👁 预览模式</button>
+      <button id="btn-export-word" onclick="exportWord()">📄 导出 Word</button>
+    </div>
+  </header>
+
+  <div class="main-area">
+    <div class="editor-pane">
+      <div class="editor-toolbar">
+        <button onclick="saveMarkdown()" title="保存为 .md 文件">💾 保存.md</button>
+        <button onclick="clearEditor(event)" title="清空编辑器"><svg t="1764070990576" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5623" width="18" height="18"><path d="M556.416 893.098667l402.986667 0.042666a42.666667 42.666667 0 0 1 4.096 85.12l-4.096 0.213334H364.458667a42.666667 42.666667 0 0 1-42.112-35.712L12.501333 632.789333a42.666667 42.666667 0 0 1 0-60.330666l185.941334-186.026667 0.341333-0.298667 293.504-293.461333a170.666667 170.666667 0 0 1 241.365333 0l190.933334 190.933333a170.666667 170.666667 0 0 1 0 241.322667l-368.170667 368.170667z m-327.466667-416.426667l-125.952 125.952 290.56 290.517333h42.112l104.874667-104.874666-311.594667-311.594667z m444.373334-323.669333a85.333333 85.333333 0 0 0-120.704 0L294.4 411.136l311.637333 311.637333 258.218667-258.176a85.333333 85.333333 0 0 0 8.448-110.805333l-4.608-5.76-3.84-4.096z" fill="#909399" p-id="5624"></path></svg>一键清除</button>
+      </div>
+      <textarea id="code"></textarea>
+    </div>
+    <div class="preview-pane">
+      <div class="preview-content markdown-body" id="preview"></div>
+    </div>
+  </div>
+
+  <button id="exit-wide-btn" class="primary" onclick="toggleWideMode()">退出预览</button>
+
+  <!-- 外部脚本库 -->
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-task-lists@2.1.1/dist/markdown-it-task-lists.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-footnote@4.0.0/dist/markdown-it-footnote.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@3.0.0/dist/markdown-it-emoji.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-container@4.0.0/dist/markdown-it-container.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+  <!-- 自定义脚本 -->
+  <script src="js/app.js?v=20260309-11"></script>
+
+</body>
+
+</html>
