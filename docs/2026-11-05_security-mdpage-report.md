@@ -36,7 +36,8 @@ npm audit --registry=https://registry.npmjs.org
 - 自动测试：66/66 通过，包括构建、解析、危险 XML、导出一致性和性能边界；JS 语法检查、`git diff --check` 通过。
 - Chrome：桌面 1440×1000、手机 390×844；检查目录、空接口提示、无持久化、四类图表、安全输入拦截和冷加载 Word 导出。
 - 导出 DOCX：ZIP 完整；7 个内嵌图片，勾选状态、外链与 Outer → Inner → After nested → Next 顺序正确。只核验包结构，不声称已在所有 Word/WPS/Pages 版本逐页验收。
-- Cloudflare Workers/Pages 本地真实运行过；静态文件可访问，Workers 返回已配置安全头。不代表 Cloudflare 生产环境已重新部署。
+- Cloudflare Workers/Pages 本地真实运行过；静态文件可访问，Workers 返回已配置安全头。登录恢复后，现有 Cloudflare Pages 生产项目已重新发布，线上目录、Mermaid 与冷加载公式 Word 导出通过；GitHub Pages Actions 测试、构建、部署及 Chrome 线上检查通过。
+- 另一个既有 Workers Static Assets 入口在更新前后均返回 HTTP 500 / Cloudflare 1101。API 已确认新版发布，但公开运行未通过；assets-only Worker 不允许 tail（100311），没有可用堆栈。未通过增加计费服务、替换框架或删除重建项目绕过。该入口故障仍需 Cloudflare 平台进一步诊断，不影响上述两个已验证的 Pages 入口。
 - 供应链：原锁文件 4 个 high，Wrangler 升级为 4.157.0 后，官方 npm registry 对项目锁文件审计为 0。默认镜像 registry 不支持 audit，因此未把其失败当作无漏洞。
 
 ## 仍需关注的风险与优化空间
@@ -50,6 +51,10 @@ npm audit --registry=https://registry.npmjs.org
 
 ## 隐私清理的验收边界
 
-当前可控的源码、Git 可达历史、Actions 记录/制品和发布内容需要分别核验；仅删除最新文件不能消除旧历史。历史重写会改变提交 ID，旧克隆不应合并旧历史回来，建议重新克隆。旧截图/克隆、搜索索引及 GitHub 无引用对象或缓存不受本地垃圾回收控制；必要时由 GitHub Support 按其政策处理，不承诺全网彻底擦除。
+本轮完成了当前源码脱敏、全部可达历史重写、精确 force-with-lease 推送、旧 Actions 运行/制品/部署记录删除、仓库个人 homepage 清空、本地旧截图/缓存清理与 Git 回收。包括转义和 URL 编码形式的归一化扫描，无已登记私人托管地址或个人仓库 URL 命中；线上主站静态资源与清理后构建一致。Cloudflare 仅操作核实为本项目的既有 Pages/Worker，旧 Pages 部署、旧 Worker 部署与版本已从 API 中删除，保留当前版本。
 
-外部依据：[GitHub 历史清理说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)、[Mermaid secure 配置](https://mermaid.js.org/config/schema-docs/config-properties-secure.html)、[Mermaid 配置修复公告](https://github.com/mermaid-js/mermaid/security/advisories/GHSA-c4c3-pg64-4m4v)、[KaTeX 公告](https://github.com/KaTeX/KaTeX/security/advisories/GHSA-238p-pmpm-9mq7)、[mxGraph 公告](https://github.com/advisories/GHSA-j4rv-pr9g-q8jv)。公告与审计结论以本报告日期为准。
+**尚未彻底消除的平台残留：**实测 GitHub 旧提交仍可按旧 SHA 查询；Cloudflare 已删除部署的旧 hash URL 仍可返回旧静态缓存（本轮检查的旧版文件未命中已登记私人地址）。需要平台支持清理，不能把 API 删除成功等同于缓存不可访问。Cloudflare 官方说明旧资源可能在数据中心保留最多一周，具体以复验为准。旧截图/克隆、搜索索引及 GitHub 无引用对象不受本地垃圾回收控制，不承诺全网彻底擦除。
+
+历史重写改变了提交 ID；旧克隆不要合并旧历史回来，建议重新克隆。回滚和操作证据只保存在忽略目录的加密副本，密钥另存，不加入仓库。
+
+外部依据：[Cloudflare 资源保留说明](https://developers.cloudflare.com/pages/configuration/serving-pages/#asset-retention)、[GitHub 历史清理说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)、[Mermaid secure 配置](https://mermaid.js.org/config/schema-docs/config-properties-secure.html)、[Mermaid 配置修复公告](https://github.com/mermaid-js/mermaid/security/advisories/GHSA-c4c3-pg64-4m4v)、[KaTeX 公告](https://github.com/KaTeX/KaTeX/security/advisories/GHSA-238p-pmpm-9mq7)、[mxGraph 公告](https://github.com/advisories/GHSA-j4rv-pr9g-q8jv)。公告与审计结论以本报告日期为准。
