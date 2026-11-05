@@ -3,6 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
+  <meta name="referrer" content="no-referrer" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="在浏览器中编辑、预览并导出 Markdown 文档。" />
   <title>Markdown小助手</title>
@@ -13,7 +14,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/neo.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.11/dist/katex.min.css">
   <!-- 自定义样式 -->
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -59,6 +60,10 @@
       <button type="button" id="image-cdn-close" aria-label="关闭上传结果">关闭</button>
       <button type="button" id="image-cdn-cancel" hidden>取消上传</button>
     </div>
+    <label for="image-cdn-endpoint">本次上传接口（仅本页使用）</label>
+    <input id="image-cdn-endpoint" type="url" placeholder="https://upload.example.com/api/upload" autocomplete="off" spellcheck="false" aria-describedby="image-cdn-privacy">
+    <p id="image-cdn-privacy">不会保存接口地址。浏览器请求仍可被当前使用者查看，请勿输入密钥。</p>
+    <button type="button" id="image-cdn-start">开始上传</button>
     <p id="image-cdn-status" role="status" aria-live="polite">准备上传</p>
     <progress id="image-cdn-progress" max="1" value="0" aria-label="已完成图片数"></progress>
     <ul id="image-cdn-details"></ul>
@@ -79,15 +84,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.18.11/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.17/dist/purify.min.js"></script>
 
   <!-- 自定义脚本 -->
-  <script src="js/markdown-compat.js?v=20261105-2"></script>
-  <script src="js/diagram-renderer.js?v=20261105-2"></script>
-  <script src="js/image-cdn.js?v=20261105-3"></script>
-  <script src="js/app.js?v=20261105-3"></script>
+  <script src="js/markdown-compat.js?v=20261105-4"></script>
+  <script src="js/diagram-renderer.js?v=20261105-4"></script>
+  <script src="js/image-cdn.js?v=20261105-4"></script>
+  <script src="js/app.js?v=20261105-4"></script>
 
 </body>
 

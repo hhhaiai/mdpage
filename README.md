@@ -6,15 +6,15 @@
 
 ## 一键上传 Markdown 图片
 
-点击右上角 **图片上传CDN**，将当前 Markdown 中的网络图片或 Base64 图片通过 [imgtool API](https://github.com/hhhaiai/imgtool/blob/main/worker/API.md) 上传至百度 CDN。面板显示真实的“已完成 / 总图片数”和当前处理状态，可随时取消；进度按图片计数，不伪造字节百分比。
+点击右上角 **图片上传CDN**，填写本次使用的 HTTPS 接口地址并选择“开始上传”，将当前 Markdown 中的网络图片或 Base64 图片通过自行配置的兼容上传 API 上传至百度 CDN。面板显示真实的“已完成 / 总图片数”和当前处理状态，可随时取消；进度按图片计数，不伪造字节百分比。
 
 - 相同地址只上传一次，并更新所有对应图片。已是百度 CDN 的图片不重复上传。
 - 保留图片说明、MWeb 宽度、标题及其他文本；支持行内图片、引用式图片、表格/引用/脚注中的图片、HTML `img src` 和 `[[img:...]]`。代码示例、普通链接不改；引用式图片会转换为行内语法，不修改共用的引用定义。
 - **全部候选成功后才一次性替换链接**，可用编辑器撤销恢复。上传期间编辑器临时只读；若其他操作改变文档，则停止并保留新编辑，不覆盖。失败或取消时不替换任何链接；本页内已确认成功的结果可复用，避免重复上传。
 - 相对路径、本机文件、内网地址、SVG Data URL 等不支持的来源会明确跳过。浏览器不能凭 Markdown 中的文件路径直接读取硬盘；HTML `srcset` 和绘图块内资源不在本功能范围内。
-- 点击即表示将这些图片或图片地址交给 imgtool / 百度；**不发送 Markdown 正文**，也不发送浏览器凭据。已发出的上传无法撤回，请勿用于敏感或无权公开的图片。CDN 地址的有效期和可用性由上游服务决定，不作为永久存档保证。
+- 开始上传即表示将这些图片或图片地址交给所填接口的运营方及百度；**不发送 Markdown 正文**，也不发送浏览器凭据。已发出的上传无法撤回，请勿用于敏感或无权公开的图片。CDN 地址的有效期和可用性由上游服务决定，不作为永久存档保证。
 
-当前调用 `https://upload.example.com/api/upload`，每批最多 100 张不同图片，单张按服务默认 5 MiB 限制；远程下载失败、鉴权变化或限流会显示错误，不进行自动重复上传。文档过大时请分批处理。完成后点击 **保存.md** 下载更新后的文档。
+源码不内置任何个人线上接口地址；填写的地址仅保存在当前页面内存，不写入本地存储。接口需支持跨域 JSON `{url}` / `{image}` 请求并返回 `{ok:true,url}`；每批最多 100 张不同图片，单张按服务默认 5 MiB 限制；远程下载失败、鉴权变化或限流会显示错误，不进行自动重复上传。文档过大时请分批处理。完成后点击 **保存.md** 下载更新后的文档。
 
 ## 粘贴不同来源的 Markdown
 
@@ -49,6 +49,10 @@
 ```
 
 **兼容边界：**这是常见扩展的组合，不代表完整模拟 MWeb、GitHub、Obsidian、Typora 或 Pandoc。跨文件 `[[双链]]`、`![[嵌入]]`、MDX/JSX、Dataview、任意站点 shortcode 和复杂合并单元格暂不解析。不执行原文脚本、事件、iframe 或页面级样式；任务勾选状态由源文档控制。MWeb 可选的双反引号行内公式仍按代码显示，避免把普通代码误当数学。悬浮目录不进入 Word，正文目录按普通列表导出，不能当作 Word 自动更新目录；导出后的复杂样式与交互不保证与网页一致。
+
+为避免异常输入拖慢页面，预览限制为 2 MB、5000 个标题和 30000 个初始元素；目录最多展示前 1000 个标题、正文最多 3 处目录，超限有提示。同一原文不重复重绘，Graphviz 在可取消的 Worker 中运行，复杂 ECharts 数据、Mermaid 图表数量和边数均有预算。
+
+Word 导出会锁定当前编辑快照并等待图表完成；读取失败、跨域不许可、损坏或超限图片会停止导出，而不是生成缺图文档。每次最多 100 张图片，单张 5 MiB、总量 50 MiB、单图 2000 万像素；远程图片必须允许 CORS。导出不等于保存原始 Markdown，请另存 `.md` 保留可编辑来源。
 
 实现语法参考：[GitLab 目录标记](https://docs.gitlab.com/user/markdown/#table-of-contents)、[VitePress 扩展](https://vitepress.dev/guide/markdown)、[Obsidian Callouts](https://obsidian.md/help/callouts) 及 [markdown-it 插件](https://github.com/markdown-it)。
 
@@ -95,7 +99,7 @@ ECharts、Graphviz 和 draw.io 会作为图片导出到 Word，导出前等待�
 2. 在仓库 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**。
 3. 在 **Actions → Deploy static site to GitHub Pages** 中选择 **Run workflow** 启动首次部署。之后每次推送到 `main` 都会自动测试、构建和发布。
 
-工作流使用仓库自带的 `GITHUB_TOKEN`，无需配置个人访问令牌。部署成功后的地址显示在工作流的 `github-pages` environment 中；本仓库对应的项目站点路径为 `https://upload.example.com/mdpage/`，实际可用性以部署结果为准。
+工作流使用仓库自带的 `GITHUB_TOKEN`，无需配置个人访问令牌。部署成功后的地址显示在工作流的 `github-pages` environment 中，请从部署结果查看自己项目的访问地址。
 
 本地 CSS、JS 和图标使用相对路径，兼容 `/mdpage/`、Fork 后的新仓库路径和自定义域名根路径，不必修改 base URL。`.nojekyll` 可用于普通静态发布；Actions 工作流直接上传构建产物，不经过 Jekyll。
 
@@ -119,9 +123,7 @@ ECharts、Graphviz 和 draw.io 会作为图片导出到 Word，导出前等待�
 
 ## 部署到 Cloudflare Workers
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://example.com/project/tree/main)
-
-将代码推送到公开 GitHub 仓库后，可通过上方按钮复制仓库并在自己的账号下部署。按钮使用 **Workers Static Assets**，不是 Cloudflare Pages；Cloudflare 会识别 `build` / `deploy` 脚本，静态资源目录由 `wrangler.jsonc` 的 `assets.directory = "./dist"` 指定。
+在 Cloudflare 中导入自己的 Git 仓库并选择 Workers Static Assets。静态资源目录由 `wrangler.jsonc` 的 `assets.directory = "./dist"` 指定。
 
 也可以在 Cloudflare Workers 中导入仓库，使用构建命令 `npm run build`、部署命令 `npm run deploy`。现有 Worker 名称为 `simimd`；如果账号中已有同名项目，请先修改 `wrangler.jsonc` 的 `name`，避免覆盖。
 

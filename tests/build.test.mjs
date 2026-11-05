@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -81,10 +81,6 @@ test('Cloudflare deployment configuration and documentation stay aligned', async
   assert.equal(wranglerConfig.assets.directory, './dist');
   assert.equal(wranglerConfig.assets.html_handling, 'auto-trailing-slash');
   assert.equal('pages_build_output_dir' in wranglerConfig, false);
-  assert.match(
-    readme,
-    /deploy\.workers\.cloudflare\.com\/\?url=https:\/\/github\.com\/example\/project\/tree\/main/,
-  );
   assert.match(readme, /Production branch \| `main`/);
   assert.match(readme, /Build command \| `npm run build`/);
   assert.match(readme, /Build output directory \| `dist`/);
@@ -175,6 +171,26 @@ test('repository ignores generated and local deployment files', async () => {
   assert.match(gitignore, /^dist\/$/m);
   assert.match(gitignore, /^\.wrangler\/$/m);
   assert.match(gitignore, /^\.env\.\*$/m);
+});
+
+test('build rejects destructive or linked output paths without removing markers', async (t) => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'simimd-safe-'));
+  t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
+  const fixture = path.join(temporaryRoot, 'project');
+  await buildSite({ projectRoot, outputDirectory: fixture });
+  await mkdir(path.join(fixture, '.git'));
+  await writeFile(path.join(fixture, '.git', 'marker'), 'keep');
+  await mkdir(path.join(fixture, 'tests'));
+  await writeFile(path.join(fixture, 'tests', 'marker'), 'keep');
+  for (const outputDirectory of [temporaryRoot, fixture, path.join(fixture, '.git'), path.join(fixture, 'tests'), path.join(fixture, 'js')]) {
+    await assert.rejects(buildSite({ projectRoot: fixture, outputDirectory }));
+    assert.equal(await readFile(path.join(fixture, '.git', 'marker'), 'utf8'), 'keep');
+  }
+  const external = path.join(temporaryRoot, 'private');
+  await mkdir(external);
+  await writeFile(path.join(external, 'secret'), 'fictional');
+  await symlink(external, path.join(fixture, 'js', 'linked'));
+  await assert.rejects(buildSite({ projectRoot: fixture, outputDirectory: path.join(temporaryRoot, 'output') }), /links/);
 });
 
 test('browser Markdown libraries and deterministic tests use matching pinned versions', async () => {

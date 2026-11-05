@@ -69,7 +69,17 @@ async function ensureExportLibsLoaded() {
 }
 
 async function ensureDrawioLoaded() {
-  if (canRenderDrawio()) return;
+  const harden = () => {
+    if (window.mxStylesheetCodec) window.mxStylesheetCodec.allowEval = false;
+    if (window.mxObjectCodec) {
+      window.mxObjectCodec.allowEval = false;
+      window.mxObjectCodec.prototype.processInclude = function (_decoder, node) {
+        if (node?.nodeName === 'include') throw new Error('禁止加载 draw.io 外部引用。');
+        return false;
+      };
+    }
+  };
+  if (canRenderDrawio()) { harden(); return; }
   if (__drawioLibPromise) return __drawioLibPromise;
 
   window.mxBasePath = 'https://unpkg.com/mxgraph@4.2.2/javascript/src';
@@ -79,7 +89,7 @@ async function ensureDrawioLoaded() {
     'https://unpkg.com/mxgraph@4.2.2/javascript/mxClient.min.js',
     () => canRenderDrawio(),
     'mxGraph 加载失败（请检查网络/CDN）。'
-  ).catch((error) => {
+  ).then(harden).catch((error) => {
     __drawioLibPromise = null;
     throw error;
   });
@@ -356,24 +366,43 @@ sequenceDiagram
 
 // 渲染 Markdown 预览
 let timer;
+let renderedSource = null;
+let renderVersion = 0;
+let mermaidJob = Promise.resolve();
 const render = () => {
   const preview = document.getElementById('preview');
   const source = editor.getValue();
+  if (source === renderedSource) return;
+  renderedSource = source;
+  const version = ++renderVersion;
   diagrams.dispose();
   preview.querySelectorAll('.drawio-diagram').forEach((node) => {
     try { node.__drawio?.graph.destroy(); } catch { }
   });
   if (typeof window.DOMPurify?.sanitize !== 'function') {
     preview.textContent = '安全渲染库加载失败，请检查网络后刷新。原始 Markdown 未丢失。';
+    preview.dataset.renderError = '1';
+    renderedSource = null;
     outline.update();
     return;
   }
+  if (source.length > 2000000 || (source.match(/^\s{0,3}#{1,6}\s/gm) || []).length > 5000) {
+    preview.textContent = '文档超过预览限制（2 MB 或 5000 个标题），请拆分后预览。原文可正常保存。';
+    preview.dataset.renderError = '1';
+    outline.update();
+    return;
+  }
+  delete preview.dataset.renderError;
+  try {
   // 保留安全的 HTML（details、表格、图片等），不执行粘贴内容中的脚本/事件或页面级样式。
   preview.innerHTML = window.DOMPurify.sanitize(md.render(source), {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select'],
     FORBID_ATTR: ['style', 'name'],
   });
+  if (preview.querySelectorAll('*').length > 30000 || preview.querySelectorAll('h1,h2,h3,h4,h5,h6').length > 5000) {
+    throw new Error('预览节点或标题数量超过限制。');
+  }
   window.MarkdownCompat.renderMath(preview, window.katex);
   outline.update();
   diagrams.render(preview);
@@ -398,6 +427,7 @@ const render = () => {
       const div = document.createElement('div');
       div.classList.add('mermaid');
       div.textContent = block.textContent;
+      div.dataset.mermaidState = 'loading';
       block.parentElement.replaceWith(div);
     } else if (isDrawio) {
       hasDrawio = true;
@@ -473,12 +503,29 @@ const render = () => {
   });
 
   if (hasMermaid) {
-    try {
-      mermaid.init(undefined, preview.querySelectorAll('.mermaid'));
-    } catch (e) {
-      console.error('Mermaid initialization error:', e);
-    }
-  }
+    const nodes = [...preview.querySelectorAll('.mermaid')];
+    mermaidJob = (async () => {
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const code = node.textContent;
+        try {
+          if (i >= 20 || code.length > 100000) throw new Error('Mermaid 超过图表数量或大小限制。');
+          const result = await mermaid.render(`mermaid-${version}-${i}`, code);
+          if (version !== renderVersion || !preview.contains(node)) return;
+          node.innerHTML = window.DOMPurify.sanitize(result.svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['foreignObject', 'a', 'image'] });
+          node.dataset.mermaidState = 'ready';
+        } catch {
+          if (version !== renderVersion) return;
+          node.dataset.mermaidState = 'error';
+          const message = document.createElement('p');
+          message.textContent = 'Mermaid 渲染失败，请检查原始语法或图表大小。';
+          const pre = document.createElement('pre');
+          pre.textContent = code;
+          node.replaceChildren(message, pre);
+        }
+      }
+    })();
+  } else mermaidJob = Promise.resolve();
 
   // draw.io：渲染 mxGraphModel（异步排队，避免影响当前渲染流畅度）
   if (hasDrawio) {
@@ -488,8 +535,12 @@ const render = () => {
       });
     });
   }
-
-
+  } catch {
+    preview.textContent = '预览失败，请检查文档大小或依赖加载。原始内容未修改。';
+    preview.dataset.renderError = '1';
+    renderedSource = null;
+    outline.update();
+  }
 };
 
 function canRenderDrawio() {
@@ -857,11 +908,17 @@ editor.on("change", () => {
 });
 
 // 初始化 Mermaid
-mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
+mermaid.initialize({
+  startOnLoad: false, theme: 'default', securityLevel: 'strict',
+  htmlLabels: false, flowchart: { htmlLabels: false }, maxTextSize: 100000, maxEdges: 500,
+  secure: ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering', 'maxEdges',
+    'themeCSS', 'themeVariables', 'fontFamily', 'altFontFamily', 'htmlLabels', 'flowchart', 'dompurifyConfig'],
+});
 render();
 
 // 清空编辑器功能 - 使用自定义弹窗定位在按钮上方
 function clearEditor(event) {
+  if (document.getElementById('btn-export-word').disabled) return;
   // 如果已经有弹窗，不再重复创建
   if (document.querySelector('.inline-confirm')) return;
 
@@ -1056,15 +1113,19 @@ function inlineStyles(sourceNode, targetNode) {
 // SVG 转 PNG
 function svgToPng(svgElement) {
   return new Promise((resolve) => {
+    let finished = false;
+    const finish = (result) => { if (!finished) { finished = true; clearTimeout(timeout); resolve(result); } };
     const timeout = setTimeout(() => {
-      console.warn('SVG render timed out, skipping.');
-      resolve(null);
-    }, 500);
+      finish(null);
+    }, 10000);
 
     try {
       const rect = svgElement.getBoundingClientRect();
       const width = rect.width || 500;
       const height = rect.height || 300;
+      if (!Number.isFinite(width * height) || width <= 0 || height <= 0 || width > 8192 || height > 8192 || width * height * 4 > 20000000) {
+        finish(null); return;
+      }
 
       const clone = svgElement.cloneNode(true);
       inlineStyles(svgElement, clone);
@@ -1088,23 +1149,20 @@ function svgToPng(svgElement) {
 
       const img = new Image();
       img.onload = () => {
-        clearTimeout(timeout);
-        ctx.drawImage(img, 0, 0, width, height);
-        resolve({ data: canvas.toDataURL('image/png'), width, height });
+        if (finished) return;
+        try {
+          ctx.drawImage(img, 0, 0, width, height);
+          finish({ data: canvas.toDataURL('image/png'), width, height });
+        } catch { finish(null); }
       };
 
-      img.onerror = (e) => {
-        clearTimeout(timeout);
-        console.error("Image load failed", e);
-        resolve(null);
-      };
+      img.onerror = () => finish(null);
 
       img.src = base64Svg;
 
     } catch (e) {
-      clearTimeout(timeout);
       console.error("SVG conversion error", e);
-      resolve(null);
+      finish(null);
     }
   });
 }
@@ -1113,39 +1171,15 @@ let __mathJaxPromise;
 
 function ensureMathJaxLoaded() {
   if (__mathJaxPromise) return __mathJaxPromise;
-
-  __mathJaxPromise = new Promise((resolve, reject) => {
-    if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-      window.MathJax.startup.promise.then(resolve).catch(reject);
-      return;
-    }
-
-    // 配置必须在脚本加载前设置
-    window.MathJax = window.MathJax || {
-      tex: {
-        inlineMath: [['$', '$'], ['\\(', '\\)']],
-        displayMath: [['$$', '$$'], ['\\[', '\\]']],
-      },
-      svg: {
-        // 使用路径缓存避免依赖字体，导出 PNG 更稳定
-        fontCache: 'none',
-      },
-    };
-
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js';
-    script.async = true;
-    script.onload = () => {
-      if (window.MathJax?.startup?.promise) {
-        window.MathJax.startup.promise.then(resolve).catch(reject);
-      } else {
-        resolve();
-      }
-    };
-    script.onerror = () => reject(new Error('MathJax 加载失败（请检查网络/CDN）。'));
-    document.head.appendChild(script);
-  });
-
+  window.MathJax = window.MathJax || {
+    tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] },
+    svg: { fontCache: 'none' },
+  };
+  __mathJaxPromise = ensureScriptLoaded(
+    'https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js',
+    () => typeof window.MathJax?.tex2svg === 'function',
+    '公式导出库加载失败，请检查网络后重试。'
+  ).catch((error) => { __mathJaxPromise = null; throw error; });
   return __mathJaxPromise;
 }
 
@@ -1187,16 +1221,40 @@ async function texToPngViaMathJax(tex, { display, sandbox }) {
 // 导出 Word 文档
 async function exportWord() {
   const btn = document.getElementById('btn-export-word');
+  if (btn.disabled || imageCdn.isRunning()) return;
   const originalText = btn.innerText;
+  const source = editor.getValue();
+  const previousReadOnly = editor.getOption('readOnly');
+  const uploadButton = document.getElementById('btn-upload-cdn');
+  const previousUploadDisabled = uploadButton.disabled;
+  const configureButton = document.getElementById('image-cdn-start');
+  let sandbox;
+  const check = () => {
+    if (editor.getValue() !== source) throw new Error('导出期间文档已变化，已取消，请重新导出。');
+  };
   btn.disabled = true;
-
+  uploadButton.disabled = true;
+  if (configureButton) configureButton.disabled = true;
+  editor.setOption('readOnly', true);
   try {
+    clearTimeout(timer);
+    render();
+    if (document.getElementById('preview').dataset.renderError) throw new Error('文档未能正常预览，不能导出。');
     await ensureExportLibsLoaded();
+    check();
     const previewEl = document.getElementById('preview');
     // 防止 draw.io 图尚未渲染就导出导致丢图
     btn.innerText = '等待图表渲染...';
     await diagrams.waitForReady(previewEl);
+    let mermaidTimeout;
+    try {
+      await Promise.race([mermaidJob, new Promise((_, reject) => {
+        mermaidTimeout = setTimeout(() => reject(new Error('Mermaid 尚未渲染完成。')), 20000);
+      })]);
+    } finally { clearTimeout(mermaidTimeout); }
+    if (previewEl.querySelector('.mermaid[data-mermaid-state="error"], .mermaid[data-mermaid-state="loading"]')) throw new Error('Mermaid 图表未成功渲染。');
     await waitForDrawioRendered(previewEl);
+    check();
     if (previewEl.querySelector('.drawio-error')) throw new Error('draw.io 图表未成功渲染，请先修正再导出。');
 
     const mermaidSvgs = Array.from(previewEl.querySelectorAll('.mermaid svg, .md-diagram-capture > svg, .md-diagram-capture > div > svg'));
@@ -1215,7 +1273,7 @@ async function exportWord() {
       const pngData = await svgToPng(mermaidSvgs[i]);
       if (pngData) {
         mermaidReplacements.push({ index: i, ...pngData });
-      } else if (mermaidSvgs[i].closest('.md-diagram')) {
+      } else {
         throw new Error('图表转为 Word 图片失败，请检查图表后重试。');
       }
     }
@@ -1256,6 +1314,7 @@ async function exportWord() {
     btn.innerText = "生成文档...";
     await new Promise(r => setTimeout(r, 50));
 
+    check();
     const contentClone = previewEl.cloneNode(true);
 
     const cloneMermaidSvgs = contentClone.querySelectorAll('.mermaid svg, .md-diagram-capture > svg, .md-diagram-capture > div > svg');
@@ -1288,7 +1347,8 @@ async function exportWord() {
     contentClone.querySelectorAll('svg').forEach(el => el.remove());
 
     // KaTeX：导出到 Word 时将公式转为图片，避免变成源码文本
-    const sandbox = document.createElement('div');
+    sandbox = document.createElement('div');
+    sandbox.dataset.exportSandbox = '1';
     sandbox.style.position = 'fixed';
     sandbox.style.left = '-10000px';
     sandbox.style.top = '0';
@@ -1312,7 +1372,7 @@ async function exportWord() {
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 10)));
         const tex = extractTexFromKatexElement(el);
         const png = await texToPngViaMathJax(tex, { display: true, sandbox }) || await htmlElementToPng(el);
-        if (!png) continue;
+        if (!png) throw new Error('公式转图片失败，已停止导出以免丢失内容。');
         const img = document.createElement('img');
         img.setAttribute('src', png.data);
         img.setAttribute('width', String(png.width));
@@ -1328,7 +1388,7 @@ async function exportWord() {
         await new Promise(r => requestAnimationFrame(() => setTimeout(r, 10)));
         const tex = extractTexFromKatexElement(el);
         const png = await texToPngViaMathJax(tex, { display: false, sandbox }) || await htmlElementToPng(el);
-        if (!png) continue;
+        if (!png) throw new Error('公式转图片失败，已停止导出以免丢失内容。');
         const img = document.createElement('img');
         img.setAttribute('src', png.data);
         img.setAttribute('width', String(png.width));
@@ -1348,7 +1408,10 @@ async function exportWord() {
     btn.innerText = '转换内容...';
     await new Promise(r => setTimeout(r, 30));
 
+    await prepareExportImages(contentClone);
+    check();
     const blocks = await htmlElementToDocxBlocks(contentClone);
+    check();
 
     if (sandbox && sandbox.parentNode) {
       sandbox.parentNode.removeChild(sandbox);
@@ -1368,11 +1431,17 @@ async function exportWord() {
     });
 
     const blob = await window.docx.Packer.toBlob(doc);
+    check();
     saveAs(blob, 'markdown_export.docx');
 
   } catch (e) {
     alert("导出出错: " + e.message);
   } finally {
+    sandbox?.remove();
+    __imageSizeCache.clear();
+    editor.setOption('readOnly', previousReadOnly);
+    uploadButton.disabled = previousUploadDisabled;
+    if (configureButton) configureButton.disabled = false;
     btn.innerText = originalText;
     btn.disabled = false;
   }
@@ -1380,6 +1449,63 @@ async function exportWord() {
 
 function isElement(node) {
   return node && node.nodeType === Node.ELEMENT_NODE;
+}
+
+async function prepareExportImages(root) {
+  const images = [...root.querySelectorAll('img')];
+  if (images.length > 100) throw new Error('图片超过 100 张，请拆分后导出。');
+  const loaded = new Map();
+  const verified = new Set();
+  let totalBytes = 0;
+  for (const image of images) {
+    const src = image.getAttribute('src') || '';
+    let data = src;
+    if (!/^data:image\/(?:png|jpeg|jpg|gif|webp);base64,/i.test(src)) {
+      if (!/^https?:\/\//i.test(src)) throw new Error('存在无法嵌入的本地或不支持图片，请先改为可访问的网络图片。');
+      if (!loaded.has(src)) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(src, { signal: controller.signal, mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer' });
+        if (!response.ok || !/^image\/(?:png|jpe?g|gif|webp)(?:;|$)/i.test(response.headers.get('content-type') || '')) throw new Error('unavailable');
+        const reader = response.body.getReader();
+        const chunks = [];
+        let bytes = 0;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > 5 * 1024 * 1024) { await reader.cancel(); throw new Error('too large'); }
+          chunks.push(value);
+        }
+        const downloaded = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('image read failed'));
+          reader.readAsDataURL(new Blob(chunks, { type: response.headers.get('content-type').split(';')[0] }));
+        });
+        loaded.set(src, downloaded);
+      } catch { throw new Error('网络图片读取失败、跨域不许可或超过 5 MiB；已停止导出，避免生成缺图文档。'); }
+      finally { clearTimeout(timer); }
+      }
+      data = loaded.get(src);
+    }
+    if (!verified.has(data)) {
+      const match = /^data:image\/(?:png|jpe?g|gif|webp);base64,([a-z0-9+/]+={0,2})$/i.exec(data);
+      if (!match || match[1].length % 4 || match[1].length > Math.ceil(5 * 1024 * 1024 / 3) * 4) {
+        throw new Error('图片数据无效或超过 5 MiB，已停止导出。');
+      }
+      totalBytes += match[1].length * 3 / 4;
+      if (totalBytes > 50 * 1024 * 1024) throw new Error('图片总量超过 50 MiB，请拆分后导出。');
+      const size = await getImageSizeFromDataUrl(data);
+      if (!size?.width || !size?.height || size.width > 16384 || size.height > 16384 || size.width * size.height > 20000000) {
+        throw new Error('图片无法解码或像素尺寸过大，已停止导出。');
+      }
+      verified.add(data);
+    }
+    image.src = data;
+    image.removeAttribute('srcset');
+  }
 }
 
 function dataUrlToUint8Array(dataUrl) {
@@ -1400,11 +1526,13 @@ function getImageSizeFromDataUrl(dataUrl) {
 
   const p = new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
-    img.onerror = () => resolve(null);
+    const timer = setTimeout(() => resolve(null), 5000);
+    img.onload = () => { clearTimeout(timer); resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height }); };
+    img.onerror = () => { clearTimeout(timer); resolve(null); };
     img.src = dataUrl;
   });
 
+  if (__imageSizeCache.size >= 100) __imageSizeCache.delete(__imageSizeCache.keys().next().value);
   __imageSizeCache.set(dataUrl, p);
   return p;
 }
@@ -1448,15 +1576,17 @@ function htmlElementToPng(el, options = {}) {
   return new Promise((resolve) => {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return resolve(null);
 
-    const timeout = setTimeout(() => {
-      console.warn('HTML->PNG render timed out, skipping.');
-      resolve(null);
-    }, timeoutMs);
+    let finished = false;
+    const finish = (result) => { if (!finished) { finished = true; clearTimeout(timeout); resolve(result); } };
+    const timeout = setTimeout(() => finish(null), timeoutMs);
 
     try {
       const rect = el.getBoundingClientRect();
       const width = Math.max(1, Math.ceil(rect.width || 1));
       const height = Math.max(1, Math.ceil(rect.height || 1));
+      if (!Number.isFinite(width * height * scale) || scale <= 0 || width * scale > 16384 || height * scale > 16384 || width * height * scale * scale > 20000000) {
+        finish(null); return;
+      }
 
       const clone = el.cloneNode(true);
       inlineAllComputedStyles(el, clone);
@@ -1474,7 +1604,8 @@ function htmlElementToPng(el, options = {}) {
       const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
       const img = new Image();
       img.onload = () => {
-        clearTimeout(timeout);
+        if (finished) return;
+        try {
         const canvas = document.createElement('canvas');
         canvas.width = width * scale;
         canvas.height = height * scale;
@@ -1483,18 +1614,14 @@ function htmlElementToPng(el, options = {}) {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        resolve({ data: canvas.toDataURL('image/png'), width, height });
+        finish({ data: canvas.toDataURL('image/png'), width, height });
+        } catch { finish(null); }
       };
-      img.onerror = (e) => {
-        clearTimeout(timeout);
-        console.error('HTML->PNG image load failed', e);
-        resolve(null);
-      };
+      img.onerror = () => finish(null);
       img.src = svgUrl;
     } catch (e) {
-      clearTimeout(timeout);
       console.error('HTML->PNG conversion error', e);
-      resolve(null);
+      finish(null);
     }
   });
 }
@@ -1554,6 +1681,10 @@ async function inlineNodeToDocxRunsAsync(node, inherited = {}) {
 
   const tag = (node.tagName || '').toUpperCase();
   if (tag === 'BR') return [new TextRun({ break: 1 })];
+  if (tag === 'INPUT' && node.type === 'checkbox') return [new TextRun({ text: node.checked ? '☑ ' : '☐ ' })];
+  if (tag === 'A' && /^(?:https?:|mailto:)/i.test(node.getAttribute('href') || '') && window.docx.ExternalHyperlink) {
+    return [new window.docx.ExternalHyperlink({ link: node.getAttribute('href'), children: await inlineContainerToDocxRunsAsync(node, inherited) })];
+  }
 
   // KaTeX 的 MathML/annotation 里会带原始 TeX，必须跳过，否则会在 Word 里出现 \times 等源码
   if (tag === 'MATH' || tag === 'SEMANTICS' || tag === 'ANNOTATION') return [];
@@ -1561,7 +1692,7 @@ async function inlineNodeToDocxRunsAsync(node, inherited = {}) {
   if (tag === 'IMG') {
     const src = node.getAttribute('src') || '';
     const bytes = dataUrlToUint8Array(src);
-    if (!bytes) return [];
+    if (!bytes) throw new Error('图片未能嵌入 Word，已停止导出。');
 
     const natural = await getImageSizeFromDataUrl(src);
     const widthAttr = parseInt(node.getAttribute('width') || '', 10);
@@ -1669,7 +1800,7 @@ async function htmlElementToDocxBlocks(rootEl) {
             // 允许行内公式图片不强制拆成块级
             return el.getAttribute('data-inline') !== '1';
           }
-          return ['TABLE', 'PRE', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(t);
+          return ['DIV', 'FIGURE', 'ASIDE', 'DETAILS', 'TABLE', 'PRE', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(t);
         });
 
         if (!hasBlockChildren) {
@@ -1700,21 +1831,38 @@ async function htmlElementToDocxBlocks(rootEl) {
       if (tag === 'UL' || tag === 'OL') {
         const isOrdered = tag === 'OL';
         const items = Array.from(node.children).filter(c => isElement(c) && c.tagName.toUpperCase() === 'LI');
-        let idx = 1;
+        let idx = parseInt(node.getAttribute('start') || '1', 10);
+        const depth = listContext?.depth || 0;
         for (const li of items) {
           const hasAnyText = (li.innerText || li.textContent || '').trim();
           if (!hasAnyText) continue;
 
-          const prefixRuns = isOrdered
-            ? [new TextRun({ text: `${idx++}. ` })]
-            : [];
-
-          blocks.push(new Paragraph({
-            children: [...prefixRuns, ...await inlineContainerToDocxRunsAsync(li)],
-            bullet: isOrdered ? undefined : { level: 0 },
-            alignment: AlignmentType.LEFT,
-            spacing: { after: 60 },
-          }));
+          let first = true;
+          const own = document.createElement('div');
+          const flush = async (force = false) => {
+            if (!force && !own.textContent.trim() && !own.querySelector('img,input')) { own.replaceChildren(); return; }
+            const prefixRuns = first && isOrdered ? [new TextRun({ text: `${idx++}. ` })] : [];
+            blocks.push(new Paragraph({
+              children: [...prefixRuns, ...await inlineContainerToDocxRunsAsync(own)],
+              bullet: !isOrdered && first ? { level: Math.min(8, depth) } : undefined,
+              indent: (!first || (isOrdered && depth)) ? { left: (depth + (first ? 0 : 1)) * 360 } : undefined,
+              alignment: AlignmentType.LEFT, spacing: { after: 60 },
+            }));
+            first = false;
+            own.replaceChildren();
+          };
+          for (const child of li.childNodes) {
+            if (isElement(child) && ['UL', 'OL'].includes(child.tagName)) {
+              await flush(first);
+              const holder = document.createElement('div'); holder.append(child.cloneNode(true));
+              await walkChildren(holder, { depth: depth + 1 });
+            } else if (isElement(child) && child.tagName === 'P') {
+              await flush();
+              own.append(child.cloneNode(true));
+              await flush();
+            } else own.append(child.cloneNode(true));
+          }
+          await flush(first);
         }
         continue;
       }

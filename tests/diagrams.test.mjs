@@ -67,6 +67,23 @@ test('invalid and oversized draw.io inputs report errors with bounded decompress
   assert.throws(() => api.parseDrawioPages(`<mxfile>${'<diagram>'.concat(model, '</diagram>').repeat(31)}</mxfile>`), /30/);
 });
 
+test('draw.io rejects executable codecs, includes and prototype object bindings', (t) => {
+  const { api } = setup(t);
+  for (const payload of [
+    '<mxStylesheet as="styles"><add as="test"><add as="test">window.__executed=1</add></add></mxStylesheet>',
+    '<include name="/offline.xml"/>', '<mxCell as="__proto__"/>', '<mxCell constructor="evil"/>',
+  ]) {
+    assert.throws(() => api.parseDrawioPages(`<mxGraphModel><root><mxCell id="0"/>${payload}</root></mxGraphModel>`), /不支持|不安全/);
+    assert.throws(() => api.parseDrawioPages(`<mxfile><diagram>${encode(`<mxGraphModel><root><mxCell id="0"/>${payload}</root></mxGraphModel>`)}</diagram></mxfile>`), /不支持|不安全/);
+  }
+});
+
+test('ECharts bounds data budgets before rendering on the UI thread', (t) => {
+  const { api } = setup(t);
+  assert.throws(() => api.parseEchartsOption(JSON.stringify({ series: [{ type: 'pie', data: Array.from({ length: 501 }, (_, i) => ({ name: String(i), value: 1 })) }] })), /超过|过多/);
+  assert.throws(() => api.parseEchartsOption(JSON.stringify({ series: [{ type: 'line', data: Array(5001).fill(1) }] })), /过多/);
+});
+
 test('failed chart renders retain source and block export instead of silently omitting charts', async (t) => {
   const { root, api } = setup(t, '<div id="root"><pre><code class="language-echarts">option = {bad: function(){}}</code></pre></div>');
   const controller = api.createController({ loadScript: async () => { throw new Error('CDN offline'); } });

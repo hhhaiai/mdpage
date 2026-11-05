@@ -1,4 +1,4 @@
-import { access, cp, mkdir, rm } from 'node:fs/promises';
+import { access, cp, mkdir, rm, lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +15,27 @@ const siteEntries = [
   'js',
 ];
 
+const inside = (child, parent) => child === parent || child.startsWith(parent + path.sep);
+
+async function canonicalPath(target) {
+  try { return await realpath(target); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return path.join(await canonicalPath(path.dirname(target)), path.basename(target));
+  }
+}
+
+async function validateInputTree(target) {
+  const info = await lstat(target);
+  if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('Build inputs must be ordinary files or directories, never links.');
+  if (info.isDirectory()) {
+    for (const entry of await readdir(target)) {
+      if (entry.startsWith('.')) throw new Error('Hidden files are not allowed inside public asset folders.');
+      await validateInputTree(path.join(target, entry));
+    }
+  }
+}
+
 export async function buildSite({
   projectRoot = defaultProjectRoot,
   outputDirectory = path.join(projectRoot, 'dist'),
@@ -22,8 +43,20 @@ export async function buildSite({
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedOutputDirectory = path.resolve(outputDirectory);
 
-  if (resolvedOutputDirectory === resolvedProjectRoot) {
-    throw new Error('The build output directory must not be the project root.');
+  const source = await realpath(resolvedProjectRoot);
+  const output = await canonicalPath(resolvedOutputDirectory);
+  if (inside(output, source) && output !== path.join(source, 'dist')) throw new Error('Inside the project, only dist may be used as build output.');
+  if (!inside(output, source)) {
+    try {
+      const items = await readdir(output);
+      if (items.length) throw new Error('External build output must be an empty or new directory.');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (inside(source, output)) throw new Error('Build output must not be the source root or one of its ancestors.');
+  for (const entry of siteEntries) {
+    const input = path.join(source, entry);
+    if (inside(input, output) || inside(output, input)) throw new Error('Build output must not overlap a source input.');
+    await validateInputTree(input);
   }
 
   await Promise.all(

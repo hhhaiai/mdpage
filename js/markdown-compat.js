@@ -173,6 +173,9 @@
     const line = state.src.slice(state.bMarks[startLine] + state.tShift[startLine], state.eMarks[startLine]).trim();
     const delimiter = line === '$$' ? '$$' : line === '\\[' ? '\\]' : '';
     if (!delimiter) return false;
+    const cacheKey = `${delimiter}:${endLine}:${state.blkIndent}`;
+    state.mdMathNoBlockEnd ??= new Map();
+    if ((state.mdMathNoBlockEnd.get(cacheKey) ?? Infinity) <= startLine) return false;
     let nextLine = startLine + 1;
     while (nextLine < endLine) {
       const text = state.src.slice(state.bMarks[nextLine] + state.tShift[nextLine], state.eMarks[nextLine]).trim();
@@ -180,7 +183,7 @@
       if (text === delimiter) break;
       nextLine++;
     }
-    if (nextLine === endLine) return false;
+    if (nextLine === endLine) { state.mdMathNoBlockEnd.set(cacheKey, startLine); return false; }
     if (silent) return true;
     const token = state.push('math_block', '', 0);
     token.content = state.getLines(startLine + 1, nextLine, state.blkIndent, false).trim();
@@ -342,10 +345,12 @@
     const headings = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')];
     const headingSet = new Set(headings);
     const used = new Set([...root.ownerDocument.querySelectorAll('[id]')].filter((el) => !headingSet.has(el)).map((el) => el.id));
+    const suffixes = new Map();
     const allocate = (base) => {
       let id = base;
-      let suffix = 1;
+      let suffix = suffixes.get(base) || 1;
       while (used.has(id)) id = `${base}-${suffix++}`;
+      suffixes.set(base, suffix);
       used.add(id);
       return id;
     };
@@ -391,6 +396,7 @@
     const document = root.ownerDocument;
     const window = document.defaultView;
     let headings = [];
+    let links = [];
     let frame = 0;
     let userToggled = false;
     const setCollapsed = (collapsed) => {
@@ -416,7 +422,7 @@
         if (h.getBoundingClientRect().top <= threshold) active = h;
         else break;
       }
-      for (const link of [...list.querySelectorAll('a'), ...root.querySelectorAll('.md-toc a')]) {
+      for (const link of links) {
         if (link.dataset.headingId === active?.id) link.setAttribute('aria-current', 'location');
         else link.removeAttribute('aria-current');
       }
@@ -451,14 +457,25 @@
     window.addEventListener('resize', () => { updatePosition(); schedule(); });
     return {
       update() {
-        headings = ensureHeadingIds(root);
+        const allHeadings = ensureHeadingIds(root);
+        headings = allHeadings.slice(0, 1000);
         list.replaceChildren(...buildToc(headings, document).childNodes);
-        root.querySelectorAll('[data-md-toc]').forEach((placeholder) => {
+        if (allHeadings.length > headings.length) {
+          const notice = document.createElement('li');
+          notice.textContent = '目录仅展示前 1000 个标题，请拆分长文。';
+          list.appendChild(notice);
+        }
+        root.querySelectorAll('[data-md-toc]').forEach((placeholder, index) => {
+          if (index >= 3) {
+            placeholder.textContent = '正文最多展示 3 处目录，请使用右上角目录导航。';
+            return;
+          }
           const title = document.createElement('p');
           title.className = 'md-toc-title';
-          title.textContent = headings.length ? '目录' : '暂无标题';
+          title.textContent = headings.length ? (allHeadings.length > headings.length ? '目录（前 1000 个标题）' : '目录') : '暂无标题';
           placeholder.replaceChildren(title, buildToc(headings, document));
         });
+        links = [...list.querySelectorAll('a'), ...root.querySelectorAll('.md-toc a')];
         panel.hidden = !headings.length;
         pane.classList.toggle('has-outline', !!headings.length);
         updatePosition();

@@ -16,6 +16,7 @@
     try { option = window.JSON5.parse(text); }
     catch { throw new Error('ECharts 需要 JSON/JSON5 数据对象或 option = {...}；不执行函数、表达式或其他 JavaScript。'); }
     if (!option || Array.isArray(option) || typeof option !== 'object') throw new Error('ECharts 配置必须是对象。');
+    let itemCount = 0;
     const clean = (value, depth = 0) => {
       if (depth > 60) throw new Error('ECharts 配置嵌套过深。');
       if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('图表数据必须是有限数值。');
@@ -33,7 +34,11 @@
         }
         return value;
       }
-      if (Array.isArray(value)) return value.map((item) => clean(item, depth + 1));
+      if (Array.isArray(value)) {
+        itemCount += value.length;
+        if (itemCount > 5000) throw new Error('ECharts 数据点过多，请汇总或拆分图表。');
+        return value.map((item) => clean(item, depth + 1));
+      }
       const result = {};
       for (const [key, item] of Object.entries(value)) {
         if (['__proto__', 'prototype', 'constructor', 'reg', 'image', 'dataView'].includes(key)) {
@@ -52,6 +57,10 @@
       return result;
     };
     const safe = clean(option);
+    const series = Array.isArray(safe.series) ? safe.series : safe.series ? [safe.series] : [];
+    if (series.length > 20 || series.some((item) => ['pie', 'sunburst', 'graph', 'treemap', 'tree', 'sankey'].includes(item.type) && (item.data?.length || 0) > 500)) {
+      throw new Error('复杂图表数据量超过安全预览限制，请汇总或拆分。');
+    }
     safe.animation = false;
     safe.tooltip = safe.tooltip || { renderMode: 'richText' };
     return safe;
@@ -61,6 +70,36 @@
     if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('不支持含 DOCTYPE 或实体声明的 draw.io 文件。');
     const doc = new DOMParser().parseFromString(source, 'text/xml');
     if (doc.querySelector('parsererror')) throw new Error('draw.io XML 无效，请检查引号、标签和转义字符。');
+    return doc;
+  }
+
+  function validateGraphModel(doc) {
+    const root = doc.documentElement;
+    if (root.tagName !== 'mxGraphModel') throw new Error('draw.io 页面需要 mxGraphModel 根节点。');
+    const roots = [...root.children];
+    if (roots.length !== 1 || roots[0].tagName !== 'root') throw new Error('draw.io 页面包含不支持的解码器或结构。');
+    const children = {
+      mxGraphModel: ['root'], root: ['mxCell', 'object', 'UserObject'],
+      object: ['mxCell'], UserObject: ['mxCell'], mxCell: ['mxGeometry'],
+      mxGeometry: ['mxPoint', 'mxRectangle', 'Array'], Array: ['mxPoint'], mxPoint: [], mxRectangle: [],
+    };
+    let count = 0;
+    const walk = (node, depth) => {
+      if (++count > 20000 || depth > 50) throw new Error('draw.io 节点过多或嵌套过深，请拆分图表。');
+      for (const attr of node.attributes) {
+        if (['__proto__', 'prototype', 'constructor'].includes(attr.name) || ['__proto__', 'prototype', 'constructor'].includes(attr.value)) {
+          throw new Error('draw.io 包含不安全的对象属性。');
+        }
+        if (attr.name === 'as' && !['geometry', 'sourcePoint', 'targetPoint', 'offset', 'alternateBounds', 'points'].includes(attr.value)) {
+          throw new Error('draw.io 包含不支持的对象绑定。');
+        }
+      }
+      for (const child of node.children) {
+        if (!children[node.tagName]?.includes(child.tagName)) throw new Error('draw.io 包含不支持的可执行解码器或外部引用。');
+        walk(child, depth + 1);
+      }
+    };
+    walk(root, 0);
     return doc;
   }
 
@@ -97,7 +136,7 @@
     }
     const doc = parseXml(xml);
     const root = doc.documentElement;
-    if (root.tagName.toLowerCase() === 'mxgraphmodel') return [{ name: '', doc }];
+    if (root.tagName.toLowerCase() === 'mxgraphmodel') return [{ name: '', doc: validateGraphModel(doc) }];
     if (root.tagName.toLowerCase() !== 'mxfile') throw new Error('draw.io 需要 mxGraphModel 或 mxfile 根节点。');
     const pages = [...root.children].filter((child) => child.tagName.toLowerCase() === 'diagram');
     if (!pages.length) throw new Error('draw.io 文件中没有 diagram 页面。');
@@ -112,7 +151,7 @@
       if (total > 8000000) throw new Error('draw.io 页面总内容超过 8 MB，请拆分文件。');
       const modelDoc = parseXml(body);
       if (modelDoc.documentElement.tagName.toLowerCase() !== 'mxgraphmodel') throw new Error(`draw.io 第 ${index + 1} 页不是 mxGraphModel。`);
-      return { name: page.getAttribute('name') || `第 ${index + 1} 页`, doc: modelDoc };
+      return { name: page.getAttribute('name') || `第 ${index + 1} 页`, doc: validateGraphModel(modelDoc) };
     });
   }
 

@@ -35,18 +35,20 @@ function setup() {
     DOMPurify: createDOMPurify(window),
     JSON5, pako,
     hljs: { highlightElement() {} },
-    mermaid: { initialize() {}, init() {} },
+    mermaid: { initialize(config) { window.mermaidConfig = config; }, init() {}, render: async () => ({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>diagram</text></svg>' }) },
   });
   window.matchMedia = () => ({ matches: true });
   window.CodeMirror = { fromTextArea() {
     let value = '';
+    let readOnly = false;
     return { setValue(text) { value = text; }, getValue() { return value; }, on() {}, refresh() {},
+      getOption() { return readOnly; }, setOption(_, option) { readOnly = option; },
       getCursor() { return { line: 0, ch: 0 }; }, setCursor() {}, scrollIntoView() {} };
   } };
   window.eval(compatSource);
   window.eval(diagramsSource);
   window.eval(imageCdnSource);
-  window.eval(appSource + '\nwindow.testApp = { md, editor, render, outline, toggleWideMode, inlineNodeToDocxRunsAsync, renderDrawioDiagrams, waitForDrawioRendered, normalizeDrawioXml };');
+  window.eval(appSource + '\nwindow.testApp = { md, editor, render, outline, toggleWideMode, inlineNodeToDocxRunsAsync, htmlElementToDocxBlocks, prepareExportImages, renderDrawioDiagrams, waitForDrawioRendered, normalizeDrawioXml, ensureDrawioLoaded, svgToPng };');
   const root = window.document.getElementById('preview');
   return { window, dom, root, app: window.testApp,
     render(source) { window.testApp.editor.setValue(source); window.testApp.render(); return root; } };
@@ -362,4 +364,130 @@ test('Word export promotes whole ECharts/Graphviz containers to block-sized imag
     assert.equal(image.options.transformation.width, 600);
     assert.equal(image.options.transformation.height, 360);
   }
+});
+
+function exportStub(window, onSave) {
+  class Item { constructor(options) { this.options = options; } }
+  window.docx = {
+    Document: Item, Paragraph: Item, TextRun: Item, ImageRun: Item, ExternalHyperlink: Item,
+    HeadingLevel: {}, AlignmentType: { LEFT: 'left', CENTER: 'center' },
+    Packer: { toBlob(document) { onSave(document); return new window.Blob(); } },
+  };
+  window.saveAs = () => {};
+  window.eval('ensureExportLibsLoaded = async () => {};');
+}
+
+test('export flushes last typed text and cancels if source changes during async work', async (t) => {
+  const { app, window } = use(t);
+  let captured;
+  exportStub(window, (doc) => { captured = doc; });
+  window.alert = (message) => assert.fail(message);
+  app.editor.setValue('Latest unscheduled content');
+  await window.exportWord();
+  assert.match(JSON.stringify(captured), /Latest unscheduled content/);
+  let alert;
+  window.alert = (message) => { alert = message; };
+  window.eval('ensureExportLibsLoaded = async () => { window.testApp.editor.setValue("Changed during export"); };');
+  captured = undefined;
+  await window.exportWord();
+  assert.equal(captured, undefined);
+  assert.match(alert, /已变化/);
+  assert.equal(app.editor.getOption('readOnly'), false);
+});
+
+test('formula failures always remove export sandbox and restore UI state', async (t) => {
+  const { root, app, window } = use(t);
+  exportStub(window, () => assert.fail('must not pack a failed export'));
+  window.alert = () => {};
+  app.editor.setValue('Formula snapshot'); app.render();
+  root.innerHTML = '<div class="katex-display"><span class="katex"><annotation encoding="application/x-tex">x</annotation></span></div>';
+  window.eval('texToPngViaMathJax = async () => { throw new Error("offline"); };');
+  await window.exportWord();
+  assert.equal(window.document.querySelectorAll('[data-export-sandbox]').length, 0);
+  assert.equal(window.document.getElementById('btn-export-word').disabled, false);
+});
+
+test('remote image failures refuse silent image omission and list/task/link structure survives', async (t) => {
+  const { root, app, window, render } = use(t);
+  root.innerHTML = '<img src="https://example.test/unavailable.png">';
+  window.fetch = async () => { throw new Error('offline'); };
+  await assert.rejects(app.prepareExportImages(root), /停止导出/);
+  exportStub(window, () => {});
+  render('- [x] done\n- [ ] pending\n\n3. Outer\n   1. Inner\n\n[Link](https://example.test/page)');
+  const blocks = await app.htmlElementToDocxBlocks(root);
+  const serialized = JSON.stringify(blocks);
+  assert.match(serialized, /☑/);
+  assert.match(serialized, /☐/);
+  assert.match(serialized, /3\. /);
+  assert.match(serialized, /https:\/\/example.test\/page/);
+  assert.ok(blocks.some((block) => block.options.indent?.left === 360));
+});
+
+test('unclosed math blocks and duplicate heading IDs remain bounded', (t) => {
+  const { app, root, window } = use(t);
+  const started = performance.now();
+  app.md.render('\\[\n'.repeat(8000) + 'x');
+  root.innerHTML = '<h2>Duplicate</h2>'.repeat(4000);
+  window.MarkdownCompat.ensureHeadingIds(root);
+  assert.equal(root.lastElementChild.id, 'duplicate-3999');
+  assert.ok(performance.now() - started < 3000, 'math and heading allocation must not rescan quadratically');
+});
+
+test('repeated TOC markers have a bounded node budget and visible notices', (t) => {
+  const { root, render, window } = use(t);
+  const started = performance.now();
+  render('[TOC]\n\n'.repeat(100) + '# Heading\n'.repeat(1100));
+  assert.equal(root.querySelectorAll('.md-toc ol').length, 3);
+  assert.equal(root.querySelectorAll('.md-toc a').length, 3000);
+  assert.equal(window.document.querySelectorAll('#floating-toc-list a').length, 1000);
+  assert.match(root.textContent, /最多展示 3/);
+  assert.ok(performance.now() - started < 6000);
+});
+
+test('Word list export preserves paragraphs around a nested list', async (t) => {
+  const { root, app, window, render } = use(t);
+  exportStub(window, () => {});
+  render('3. Outer\n   1. Inner\n\n   After nested\n4. Next');
+  const blocks = JSON.stringify(await app.htmlElementToDocxBlocks(root));
+  assert.ok(blocks.indexOf('Outer') < blocks.indexOf('Inner'));
+  assert.ok(blocks.indexOf('Inner') < blocks.indexOf('After nested'));
+  assert.ok(blocks.indexOf('After nested') < blocks.indexOf('Next'));
+});
+
+test('Word export rejects corrupt image data rather than packaging broken pictures', async (t) => {
+  const { root, app, window } = use(t);
+  window.Image = class { set src(_) { window.queueMicrotask(() => this.onerror()); } };
+  root.innerHTML = '<img src="data:image/png;base64,AAAA" srcset="https://example.test/alternate.png 2x">';
+  await assert.rejects(app.prepareExportImages(root), /无法解码/);
+});
+
+test('draw.io hardening rejects includes without breaking ordinary codec children', async (t) => {
+  const { app, window } = use(t);
+  window.mxGraph = function () {};
+  window.mxCodec = function () {};
+  window.mxUtils = { parseXml() {} };
+  window.mxObjectCodec = function () {};
+  window.mxStylesheetCodec = { allowEval: true };
+  await app.ensureDrawioLoaded();
+  assert.equal(window.mxStylesheetCodec.allowEval, false);
+  assert.equal(window.mxObjectCodec.allowEval, false);
+  assert.equal(window.mxObjectCodec.prototype.processInclude(null, { nodeName: 'mxCell' }), false);
+  assert.throws(() => window.mxObjectCodec.prototype.processInclude(null, { nodeName: 'include' }), /禁止/);
+});
+
+test('Mermaid configuration preserves secure defaults and native SVG labels', (t) => {
+  const { window } = use(t);
+  const config = window.mermaidConfig;
+  assert.equal(config.htmlLabels, false);
+  assert.equal(config.flowchart.htmlLabels, false);
+  for (const key of ['secure', 'securityLevel', 'maxTextSize', 'maxEdges', 'themeCSS', 'themeVariables', 'htmlLabels', 'flowchart']) {
+    assert.ok(config.secure.includes(key), key);
+  }
+});
+
+test('SVG export refuses huge canvas allocation before decoding', async (t) => {
+  const { window, app } = use(t);
+  const svg = window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.getBoundingClientRect = () => ({ width: 1000000, height: 1000000 });
+  assert.equal(await app.svgToPng(svg), null);
 });

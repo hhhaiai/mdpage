@@ -9,6 +9,7 @@ import container from 'markdown-it-container';
 const compatSource = await readFile(new URL('../js/markdown-compat.js', import.meta.url), 'utf8');
 const source = await readFile(new URL('../js/image-cdn.js', import.meta.url), 'utf8');
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const endpoint = 'https://upload.example.test/api/upload';
 const cdn = (n) => `https://edit-upload-pic.cdn.bcebos.com/test-${n}.png?authorization=a%2Fb&key=value`;
 
 function setup(t) {
@@ -16,6 +17,7 @@ function setup(t) {
   const { window } = dom;
   window.eval(compatSource);
   window.eval(source);
+  window.document.getElementById('image-cdn-endpoint').value = endpoint;
   const createRenderer = () => new MarkdownIt({ html: true }).use(footnote).use(window.MarkdownCompat.install, { container });
   const scan = window.ImageCdn.createScanner(createRenderer);
   t.after(() => window.close());
@@ -123,17 +125,18 @@ test('skip local and private sources, reject oversized data, and avoid reuploadi
 test('upload sends only image source without credentials and validates HTTP and CDN result', async (t) => {
   const { api } = setup(t);
   let sent;
-  const url = await api.uploadImage({ type: 'url', source: 'https://example.com/a.png' }, { fetchImpl: async (endpoint, options) => {
+  const url = await api.uploadImage({ type: 'url', source: 'https://example.com/a.png' }, { endpoint, fetchImpl: async (endpoint, options) => {
     sent = { endpoint, options };
     return { ok: true, json: async () => ({ ok: true, data: { url: cdn(1) } }) };
   } });
   assert.equal(url, cdn(1));
-  assert.equal(sent.endpoint, api.endpoint);
+  assert.equal(sent.endpoint, endpoint);
   assert.equal(sent.options.credentials, 'omit');
   assert.equal(sent.options.referrerPolicy, 'no-referrer');
   assert.equal(sent.options.body, '{"url":"https://example.com/a.png"}');
   for (const result of [{ ok: false }, { ok: true, url: 'javascript:alert(1)' }, { ok: true, url: 'https://evil.test/x' }, { ok: true, url: cdn(1) + '"' }]) assert.throws(() => api.validateResult(result));
-  await assert.rejects(api.uploadImage({ type: 'data', source: 'x' }, { fetchImpl: async () => ({ ok: false, status: 413, json: async () => ({ error: { message: 'Too large' } }) }) }), /Too large/);
+  assert.throws(() => api.validateResult({ ok: false, error: { message: 'private upstream detail' } }), (error) => !error.message.includes('private upstream'));
+  await assert.rejects(api.uploadImage({ type: 'data', source: 'x' }, { endpoint, fetchImpl: async () => ({ ok: false, status: 413, json: async () => ({ error: { message: 'sensitive upstream detail' } }) }) }), /HTTP 413/);
 });
 
 function fakeEditor(initial) {
@@ -213,4 +216,21 @@ test('cancel or outside edits prevent all link changes and stop later uploads', 
     assert.equal(editor.getValue(), mode === 'cancel' ? markdown : markdown + '\nnew edit');
     assert.equal(editor.getOption('readOnly'), false);
   }
+});
+
+test('upload endpoint is user supplied, validated and never persisted or requested implicitly', async (t) => {
+  const { api, createRenderer, window } = setup(t);
+  assert.equal(api.endpoint, '');
+  for (const value of ['', 'http://example.test/api', 'https://user:password@example.test/api', 'https://localhost./api', 'https://example.test/api?token=secret']) {
+    assert.throws(() => api.validateEndpoint(value));
+  }
+  let calls = 0;
+  window.document.getElementById('image-cdn-endpoint').value = '';
+  const editor = fakeEditor('![x](https://example.com/x.png)');
+  const controller = api.createController({ editor, createRenderer, upload: async () => { calls++; return cdn(1); } });
+  await controller.start();
+  assert.equal(calls, 0);
+  assert.equal(window.localStorage.length, 0);
+  assert.equal(window.sessionStorage.length, 0);
+  assert.match(window.document.getElementById('image-cdn-status').textContent, /填写/);
 });

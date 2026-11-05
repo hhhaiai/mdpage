@@ -1,11 +1,23 @@
 (function () {
   'use strict';
 
-  const endpoint = 'https://upload.example.com/api/upload';
+  const endpoint = '';
   const cdnHost = 'edit-upload-pic.cdn.bcebos.com';
   const maxImageBytes = 5 * 1024 * 1024;
   const maxImages = 100;
   const timeoutMs = 120000;
+
+  function validateEndpoint(value) {
+    let url;
+    try { url = new URL(String(value || '').trim()); } catch { throw new Error('请填写本次使用的 HTTPS 上传接口。'); }
+    const host = url.hostname.toLowerCase().replace(/\.+$/, '');
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+      || !host.includes('.') || host.includes(':') || /^\d+(?:\.\d+)*$/.test(host)
+      || host === 'localhost' || /\.(?:localhost|local|internal|lan|home)$/.test(host)) {
+      throw new Error('上传接口须为公开 HTTPS 地址，不含凭据、查询参数或片段。');
+    }
+    return url.href;
+  }
 
   function classifySource(raw) {
     const source = String(raw || '').trim();
@@ -29,7 +41,7 @@
   }
 
   function validateResult(result) {
-    if (result?.ok !== true) throw new Error(result?.error?.message || '上传服务未确认成功');
+    if (result?.ok !== true) throw new Error('上传服务未确认成功，请检查接口状态。');
     const value = result.url || result.data?.url;
     if (typeof value !== 'string' || /[\s<>"'()\\`]/.test(value)) throw new Error('上传服务返回的图片地址格式不安全');
     let url;
@@ -304,7 +316,8 @@
     return { output, patches };
   }
 
-  async function uploadImage(group, { signal, fetchImpl = window.fetch.bind(window) } = {}) {
+  async function uploadImage(group, { signal, endpoint: configuredEndpoint, fetchImpl = window.fetch.bind(window) } = {}) {
+    const target = validateEndpoint(configuredEndpoint);
     const abort = new AbortController();
     const cancel = () => abort.abort();
     if (signal?.aborted) throw new Error('已取消上传');
@@ -312,7 +325,7 @@
     let timeout = false;
     const timer = setTimeout(() => { timeout = true; abort.abort(); }, timeoutMs);
     try {
-      const response = await fetchImpl(endpoint, {
+      const response = await fetchImpl(target, {
         method: 'POST', mode: 'cors', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(group.type === 'data' ? { image: group.source } : { url: group.source }),
@@ -320,12 +333,13 @@
       });
       let result;
       try { result = await response.json(); } catch { throw new Error(`上传服务返回非 JSON 响应（HTTP ${response.status}）`); }
-      if (!response.ok) throw new Error(result?.error?.message || `上传失败（HTTP ${response.status}）`);
+      if (!response.ok) throw new Error(`上传失败（HTTP ${response.status}），请检查接口配置或图片大小。`);
       return validateResult(result);
     } catch (error) {
       if (signal?.aborted) throw new Error('已取消上传');
       if (timeout) throw new Error('单张图片上传超时，未自动重试，避免重复上传。');
-      throw error;
+      if (error instanceof Error && !/https?:|data:|authorization/i.test(error.message)) throw error;
+      throw new Error('上传请求失败，请检查接口和网络；原文未修改。');
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
@@ -341,6 +355,8 @@
     const details = document.getElementById('image-cdn-details');
     const cancelButton = document.getElementById('image-cdn-cancel');
     const closeButton = document.getElementById('image-cdn-close');
+    const endpointInput = document.getElementById('image-cdn-endpoint');
+    const startButton = document.getElementById('image-cdn-start');
     const cache = new Map();
     let running = false;
     let controller;
@@ -363,6 +379,8 @@
       cancelButton.hidden = !value;
       closeButton.hidden = value;
       panel.setAttribute('aria-busy', String(value));
+      if (endpointInput) endpointInput.disabled = value;
+      if (startButton) startButton.disabled = value;
       // Keep the operation transactional even if another action changes the editor.
       if (value) {
         originalReadOnly = editor.getOption('readOnly');
@@ -380,6 +398,9 @@
     const start = async () => {
       if (running) return;
       panel.hidden = false;
+      let target;
+      try { target = validateEndpoint(endpointInput?.value); }
+      catch (error) { announce(error.message); endpointInput?.focus(); return; }
       details.replaceChildren();
       announce('正在扫描 Markdown 图片…');
       progress.value = 0;
@@ -413,7 +434,7 @@
           if (Date.now() - started > 15 * 60 * 1000) throw new Error('本批上传已达 15 分钟，请分批处理；原文未修改。');
           announce(`上传中 ${completed}/${plan.groups.length} · 正在处理第 ${completed + 1} 张`);
           const cached = cache.get(group.source);
-          const url = cached || await upload(group, { signal: controller.signal });
+          const url = cached || await upload(group, { signal: controller.signal, endpoint: target });
           // A received success is reusable after cancellation, but may not mutate
           // the document once the user has cancelled or another writer edited it.
           validateResult({ ok: true, url });
@@ -444,9 +465,14 @@
         busy(false);
       }
     };
-    button.addEventListener('click', start);
+    button.addEventListener('click', () => {
+      panel.hidden = false;
+      if (!endpointInput?.value.trim()) { announce('请填写本次使用的上传接口；地址只在当前页面内存中使用。'); endpointInput?.focus(); }
+      else start();
+    });
+    startButton?.addEventListener('click', start);
     return { start, isRunning: () => running };
   }
 
-  window.ImageCdn = { endpoint, createScanner, classifySource, validateResult, applyResults, uploadImage, createController };
+  window.ImageCdn = { endpoint, validateEndpoint, createScanner, classifySource, validateResult, applyResults, uploadImage, createController };
 }());

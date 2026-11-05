@@ -55,6 +55,9 @@ header {
 .image-cdn-panel progress { width: 100%; accent-color: #2563eb; }
 .image-cdn-panel ul { padding-left: 18px; margin-bottom: 0; max-height: 160px; overflow: auto; color: #59636e; }
 .image-cdn-panel ul:empty { display: none; }
+.image-cdn-panel label { display: block; margin-top: 12px; }
+.image-cdn-panel input { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; margin: 6px 0; }
+#image-cdn-privacy { color: #59636e; font-size: 12px; }
 
 button {
   padding: 6px 14px;
