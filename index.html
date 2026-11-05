@@ -25,6 +25,7 @@
     <div class="toolbar">
       <button id="header-preview-btn" onclick="toggleWideMode()">👁 预览模式</button>
       <button id="btn-export-word" onclick="exportWord()">📄 导出 Word</button>
+      <button id="btn-upload-cdn" type="button" title="将 Markdown 中的图片上传至 imgtool / 百度 CDN 并替换链接">图片上传CDN</button>
     </div>
   </header>
 
@@ -36,28 +37,57 @@
       </div>
       <textarea id="code"></textarea>
     </div>
-    <div class="preview-pane">
+    <div class="preview-pane" id="preview-pane">
+      <aside id="floating-toc" class="floating-toc" aria-label="文档目录" hidden>
+        <div class="floating-toc-header">
+          <span class="floating-toc-title">目录</span>
+          <button type="button" id="floating-toc-toggle" class="floating-toc-toggle" aria-expanded="false" aria-controls="floating-toc-nav" title="展开目录">目录 <span aria-hidden="true">☰</span></button>
+        </div>
+        <nav id="floating-toc-nav" aria-label="文档标题导航">
+          <ol id="floating-toc-list"></ol>
+        </nav>
+      </aside>
       <div class="preview-content markdown-body" id="preview"></div>
     </div>
   </div>
 
   <button id="exit-wide-btn" class="primary" onclick="toggleWideMode()">退出预览</button>
 
+  <section id="image-cdn-panel" class="image-cdn-panel" aria-label="图片 CDN 上传进度" hidden>
+    <div class="image-cdn-heading">
+      <strong>图片上传CDN</strong>
+      <button type="button" id="image-cdn-close" aria-label="关闭上传结果">关闭</button>
+      <button type="button" id="image-cdn-cancel" hidden>取消上传</button>
+    </div>
+    <p id="image-cdn-status" role="status" aria-live="polite">准备上传</p>
+    <progress id="image-cdn-progress" max="1" value="0" aria-label="已完成图片数"></progress>
+    <ul id="image-cdn-details"></ul>
+  </section>
+
   <!-- 外部脚本库 -->
-  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.3.3/dist/markdown-it.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it-task-lists@2.1.1/dist/markdown-it-task-lists.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it-footnote@4.0.0/dist/markdown-it-footnote.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@3.0.0/dist/markdown-it-emoji.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it-container@4.0.0/dist/markdown-it-container.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-deflist@3.0.0/dist/markdown-it-deflist.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-abbr@2.0.0/dist/markdown-it-abbr.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-mark@4.0.0/dist/markdown-it-mark.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-sub@2.0.0/dist/markdown-it-sub.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-sup@2.0.0/dist/markdown-it-sup.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-ins@4.0.0/dist/markdown-it-ins.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.17/dist/purify.min.js"></script>
 
   <!-- 自定义脚本 -->
-  <script src="js/app.js?v=20260309-11"></script>
+  <script src="js/markdown-compat.js?v=20261105-2"></script>
+  <script src="js/diagram-renderer.js?v=20261105-2"></script>
+  <script src="js/image-cdn.js?v=20261105-3"></script>
+  <script src="js/app.js?v=20261105-3"></script>
 
 </body>
 

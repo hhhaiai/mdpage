@@ -12,18 +12,24 @@ function ensureScriptLoaded(src, testFn, errorMessage) {
 
   const promise = new Promise((resolve, reject) => {
     const existingScript = document.querySelector(`script[src="${src}"]`);
+    const timeout = setTimeout(() => {
+      if (!existingScript) script.remove();
+      reject(new Error(errorMessage + '（加载超时）'));
+    }, 15000);
 
     const handleLoad = () => {
+      clearTimeout(timeout);
       if (typeof testFn !== 'function' || testFn()) {
         resolve();
       } else {
+        if (!existingScript) script.remove();
         reject(new Error(errorMessage));
       }
     };
 
     if (existingScript) {
       existingScript.addEventListener('load', handleLoad, { once: true });
-      existingScript.addEventListener('error', () => reject(new Error(errorMessage)), { once: true });
+      existingScript.addEventListener('error', () => { clearTimeout(timeout); reject(new Error(errorMessage)); }, { once: true });
       return;
     }
 
@@ -31,7 +37,7 @@ function ensureScriptLoaded(src, testFn, errorMessage) {
     script.src = src;
     script.async = true;
     script.onload = handleLoad;
-    script.onerror = () => reject(new Error(errorMessage));
+    script.onerror = () => { clearTimeout(timeout); script.remove(); reject(new Error(errorMessage)); };
     document.head.appendChild(script);
   }).catch((error) => {
     __dynamicScriptPromises.delete(src);
@@ -81,11 +87,6 @@ async function ensureDrawioLoaded() {
   return __drawioLibPromise;
 }
 
-function mayContainMath(source) {
-  if (!source) return false;
-  return /(\$\$[\s\S]+?\$\$|\$(?!\s)[^\n$]+?\$|\\\(|\\\)|\\\[|\\\])/.test(source);
-}
-
 // 初始化 Markdown 渲染器（markdown-it）和 CodeMirror 编辑器
 function createMarkdownRenderer() {
   if (!window.markdownit) {
@@ -100,41 +101,40 @@ function createMarkdownRenderer() {
 
   // 任务列表 / 脚注 / emoji
   if (typeof window.markdownitTaskLists === 'function') {
-    md.use(window.markdownitTaskLists, { enabled: true, label: true, labelAfter: true });
+    md.use(window.markdownitTaskLists, { enabled: false, label: true });
   }
   if (typeof window.markdownitFootnote === 'function') {
     md.use(window.markdownitFootnote);
   }
-  if (typeof window.markdownitEmoji === 'function') {
-    md.use(window.markdownitEmoji);
+  const emojiPlugin = window.markdownitEmoji?.full || window.markdownitEmoji;
+  if (typeof emojiPlugin === 'function') {
+    md.use(emojiPlugin);
+  }
+  // 常见 Markdown 方言的轻量 inline/block 扩展，基础渲染继续使用 markdown-it。
+  if (typeof window.markdownitDeflist === 'function') {
+    md.use(window.markdownitDeflist);
+  }
+  if (typeof window.markdownitAbbr === 'function') {
+    md.use(window.markdownitAbbr);
+  }
+  if (typeof window.markdownitMark === 'function') {
+    md.use(window.markdownitMark);
+  }
+  if (typeof window.markdownitSub === 'function') {
+    md.use(window.markdownitSub);
+  }
+  if (typeof window.markdownitSup === 'function') {
+    md.use(window.markdownitSup);
+  }
+  if (typeof window.markdownitIns === 'function') {
+    md.use(window.markdownitIns);
   }
 
-  // 折叠块：
-  // :::details 标题
-  // 内容...
-  // :::
-  const installDetailsContainer = (containerName) => {
-    if (typeof window.markdownitContainer !== 'function') return;
-
-    md.use(window.markdownitContainer, containerName, {
-      validate: (params) => {
-        const trimmed = params.trim();
-        return trimmed === containerName || trimmed.startsWith(containerName + ' ');
-      },
-      render: (tokens, idx) => {
-        const token = tokens[idx];
-        if (token.nesting === 1) {
-          const info = token.info.trim();
-          const title = info.slice(containerName.length).trim() || '详情';
-          return `<details class="md-details"><summary>${md.utils.escapeHtml(title)}</summary>\n`;
-        }
-        return `</details>\n`;
-      }
-    });
-  };
-
-  installDetailsContainer('details');
-  installDetailsContainer('collapse');
+  md.use(window.MarkdownCompat.install, {
+    container: window.markdownitContainer,
+    normalizeSequence: normalizeLegacySequenceBody,
+    normalizeFlow: normalizeLegacyFlowBody,
+  });
 
   return md;
 }
@@ -146,6 +146,15 @@ const editor = CodeMirror.fromTextArea(document.getElementById("code"), {
   lineNumbers: true,
   lineWrapping: true
 });
+const outline = window.MarkdownCompat.createOutline({
+  root: document.getElementById('preview'),
+  pane: document.getElementById('preview-pane'),
+  panel: document.getElementById('floating-toc'),
+  list: document.getElementById('floating-toc-list'),
+  toggle: document.getElementById('floating-toc-toggle'),
+});
+const diagrams = window.DiagramRenderer.createController({ loadScript: ensureScriptLoaded });
+const imageCdn = window.ImageCdn.createController({ editor, createRenderer: createMarkdownRenderer });
 
 function normalizeLegacySequenceBody(body) {
   const lines = String(body || '').split('\n');
@@ -229,154 +238,12 @@ function normalizeLegacyFlowBody(body) {
   return ['flowchart TD', ...nodeLines, ...edgeLines].join('\n');
 }
 
-function normalizeLegacyDiagramSource(source) {
-  if (!source) return '';
-  return String(source).replace(/(^|\n)```(sequence|flow)\s*\n([\s\S]*?)\n```/g, (_match, prefix, type, body) => {
-    const normalizedBody = type === 'sequence'
-      ? normalizeLegacySequenceBody(body)
-      : normalizeLegacyFlowBody(body);
-
-    if (!normalizedBody) return _match;
-    return `${prefix}\n\`\`\`mermaid\n${normalizedBody}\n\`\`\``;
-  });
-}
-
-function normalizeMarkdownSource(source) {
-  if (!source) return '';
-  const input = normalizeLegacyDiagramSource(String(source));
-
-  const replaceOutsideBackticks = (line, replacer) => {
-    // 保留行内代码：`...` 或 ``...`` 等
-    let out = '';
-    let i = 0;
-    let inSpan = false;
-    let spanTicks = 0;
-    let segmentStart = 0;
-
-    const flushSegment = (end) => {
-      const seg = line.slice(segmentStart, end);
-      out += inSpan ? seg : replacer(seg);
-    };
-
-    while (i < line.length) {
-      if (line[i] !== '`') {
-        i++;
-        continue;
-      }
-
-      // count ticks
-      let j = i;
-      while (j < line.length && line[j] === '`') j++;
-      const tickCount = j - i;
-
-      // flush text before ticks
-      flushSegment(i);
-      out += line.slice(i, j);
-
-      if (!inSpan) {
-        inSpan = true;
-        spanTicks = tickCount;
-      } else if (tickCount === spanTicks) {
-        inSpan = false;
-        spanTicks = 0;
-      }
-
-      i = j;
-      segmentStart = i;
-    }
-
-    flushSegment(line.length);
-    return out;
-  };
-
-  const applyRewrites = (chunk) => {
-    let text = chunk;
-
-    // 兼容一种“非主流图片语法”
-    // [[img:https://...]] -> ![](https://...)
-    text = text.replace(/\[\[img:([^\]]+)\]\]/gi, (_m, url) => {
-      const normalizedUrl = String(url).trim();
-      return `![](${normalizedUrl})`;
-    });
-
-    // 兼容一种“悬浮提示”写法（类似 kramdown）
-    // [text](url){:title="..."} -> <a href="url" title="...">text</a>
-    // 说明：这是定向兼容，避免引入额外插件。
-    text = text.replace(
-      /\[([^\]]+)\]\(([^)\s]+)\)\{:\s*title\s*=\s*"([^"]*)"\s*\}/g,
-      (_m, label, url, title) => {
-        const safeLabel = String(label).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const safeUrl = String(url).replace(/"/g, '&quot;');
-        const safeTitle = String(title).replace(/"/g, '&quot;');
-        return `<a href="${safeUrl}" title="${safeTitle}">${safeLabel}</a>`;
-      }
-    );
-
-    return text;
-  };
-
-  // 关键：不要在 fenced code block（``` / ~~~）内做任何替换，避免示例代码被改写成 HTML。
-  const lines = input.replace(/\r\n/g, '\n').split('\n');
-  let inFence = false;
-  let fenceMarker = '';
-
-  const outLines = lines.map((rawLine) => {
-    const line = rawLine;
-    const fenceMatch = /^\s*(```+|~~~+)/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1];
-      if (!inFence) {
-        inFence = true;
-        fenceMarker = marker[0];
-      } else if (marker[0] === fenceMarker) {
-        inFence = false;
-        fenceMarker = '';
-      }
-      return line;
-    }
-
-    if (inFence) return line;
-    return replaceOutsideBackticks(line, applyRewrites);
-  });
-
-  return outLines.join('\n');
-}
-
-function slugifyHeadingId(raw) {
-  const text = String(raw || '').trim().toLowerCase();
-  if (!text) return '';
-  // 尽量贴近 GitHub 风格：空白 -> -, 去掉大部分标点，保留中英文/数字/下划线/连字符
-  return text
-    .replace(/[\s\u00A0]+/g, '-')
-    .replace(/[“”"'‘’]/g, '')
-    .replace(/[()（）\[\]【】{}<>《》]/g, '')
-    .replace(/[^\p{L}\p{N}\u4e00-\u9fff\-_]+/gu, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function ensureHeadingIds(previewRoot) {
-  const headings = previewRoot.querySelectorAll('h1,h2,h3,h4,h5,h6');
-  const used = new Map();
-
-  headings.forEach(h => {
-    if (h.id) {
-      used.set(h.id, (used.get(h.id) || 0) + 1);
-      return;
-    }
-    const base = slugifyHeadingId(h.textContent);
-    if (!base) return;
-    const count = used.get(base) || 0;
-    const nextId = count === 0 ? base : `${base}-${count}`;
-    used.set(base, count + 1);
-    h.id = nextId;
-  });
-}
-
 // 设置默认内容
 editor.setValue(`# Markdown 小助手使用指南事例
 
 欢迎使用 **Markdown 小助手**！这是一个功能强大的在线 Markdown 编辑器。
+
+[TOC]
 
 ---
 
@@ -412,6 +279,19 @@ editor.setValue(`# Markdown 小助手使用指南事例
 | 代码高亮 | 多语言支持 | ✅ |
 | Mermaid 图表 | 流程图/时序图 | ✅ |
 | Word 导出 | 一键导出文档 | ✅ |
+
+### 更多 Markdown 扩展
+
+==高亮文本==、H~2~O、x^2^、++插入文本++ 和 :rocket:。
+
+> [!TIP] 目录与提示块
+> 有标题就会生成右上角悬浮目录；单独一行写 \`[TOC]\`、\`[[toc]]\` 或 \`[[_TOC_]]\` 还会插入正文目录。
+
+> [!WARNING]- 点击展开注意事项
+> 支持 GitHub 提示块和 Obsidian 折叠写法；代码块内的示例不会被改写。
+
+TOC
+: Table of Contents，文档目录。
 
 ### 代码高亮
 
@@ -477,13 +357,26 @@ sequenceDiagram
 // 渲染 Markdown 预览
 let timer;
 const render = () => {
-  const source = normalizeMarkdownSource(editor.getValue());
-  const html = md.render(source);
   const preview = document.getElementById('preview');
-  preview.innerHTML = html;
-
-  // 标题锚点：支持 [xxx](#某标题) 这类跳转
-  ensureHeadingIds(preview);
+  const source = editor.getValue();
+  diagrams.dispose();
+  preview.querySelectorAll('.drawio-diagram').forEach((node) => {
+    try { node.__drawio?.graph.destroy(); } catch { }
+  });
+  if (typeof window.DOMPurify?.sanitize !== 'function') {
+    preview.textContent = '安全渲染库加载失败，请检查网络后刷新。原始 Markdown 未丢失。';
+    outline.update();
+    return;
+  }
+  // 保留安全的 HTML（details、表格、图片等），不执行粘贴内容中的脚本/事件或页面级样式。
+  preview.innerHTML = window.DOMPurify.sanitize(md.render(source), {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select'],
+    FORBID_ATTR: ['style', 'name'],
+  });
+  window.MarkdownCompat.renderMath(preview, window.katex);
+  outline.update();
+  diagrams.render(preview);
 
   let hasMermaid = false;
   let hasDrawio = false;
@@ -575,7 +468,7 @@ const render = () => {
 
       block.parentElement.replaceWith(host);
     } else {
-      hljs.highlightElement(block);
+      if (!block.closest('.md-diagram')) hljs.highlightElement(block);
     }
   });
 
@@ -596,23 +489,7 @@ const render = () => {
     });
   }
 
-  // KaTeX：渲染 $...$ 与 $$...$$
-  if (mayContainMath(source)) {
-    try {
-      if (typeof window.renderMathInElement === 'function') {
-        window.renderMathInElement(preview, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false }
-          ],
-          throwOnError: false,
-          ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
-        });
-      }
-    } catch (e) {
-      console.error('KaTeX render error:', e);
-    }
-  }
+
 };
 
 function canRenderDrawio() {
@@ -653,70 +530,31 @@ function normalizeDrawioXml(input) {
   return xml;
 }
 
-function parseXmlOrThrow(xml) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xml, 'text/xml');
-  const rootTag = (doc && doc.documentElement && doc.documentElement.tagName) ? doc.documentElement.tagName.toLowerCase() : '';
-  const hasParserError = rootTag === 'parsererror' || doc.getElementsByTagName('parsererror')?.length;
-
-  if (hasParserError) {
-    const msg = (doc.getElementsByTagName('parsererror')[0]?.textContent || '').trim();
-    const hint = 'XML 未通过解析（可能包含未转义的 & 字符或引号）。建议：从 draw.io 复制“mxGraphModel 原始 XML”，并用 ```drawio 代码块粘贴。';
-    const detail = msg ? `解析器信息：${msg}` : '';
-    throw new Error([hint, detail].filter(Boolean).join('\n'));
-  }
-
-  return doc;
-}
-
-function parseDrawioInputToMxGraphModelDocOrThrow(xml) {
-  const doc = parseXmlOrThrow(xml);
-  const rootTag = (doc && doc.documentElement && doc.documentElement.tagName) ? doc.documentElement.tagName.toLowerCase() : '';
-
-  if (rootTag === 'mxgraphmodel') return doc;
-
-  if (rootTag === 'mxfile') {
-    const diagram = doc.getElementsByTagName('diagram')?.[0];
-    const diagramText = (diagram?.textContent || '').trim();
-
-    // 仅支持未压缩的 diagram：内容直接是 <mxGraphModel>...</mxGraphModel>
-    if (diagramText.startsWith('<mxGraphModel') || diagramText.startsWith('<?xml')) {
-      const inner = normalizeDrawioXml(diagramText);
-      const innerDoc = parseXmlOrThrow(inner);
-      const innerRoot = innerDoc?.documentElement?.tagName?.toLowerCase?.() || '';
-      if (innerRoot === 'mxgraphmodel') return innerDoc;
-    }
-
-    throw new Error('检测到 mxfile（draw.io 文件级 XML）。当前仅支持未压缩的 <diagram> 内容为 <mxGraphModel> 的情况；压缩版 mxfile 需要解压，暂未支持。');
-  }
-
-  if (rootTag) {
-    throw new Error(`XML 根节点为 <${rootTag}>，当前仅支持 <mxGraphModel> 或 <mxfile>（未压缩）。`);
-  }
-
-  throw new Error('未检测到有效的 XML 根节点。');
-}
-
 async function renderDrawioDiagrams(root) {
   if (!root) return;
   const nodes = Array.from(root.querySelectorAll('.drawio-diagram'));
   const pendingNodes = nodes.filter(node => {
     const state = node.getAttribute('data-drawio-rendered');
-    return state !== '1' && state !== 'rendering';
+    return state === '0';
   });
   if (!pendingNodes.length) return;
+  pendingNodes.forEach((node) => node.setAttribute('data-drawio-rendered', 'loading'));
 
   try {
-    await ensureDrawioLoaded();
+    await Promise.all([ensureDrawioLoaded(), diagrams.loadDrawioDecoder()]);
   } catch (e) {
     pendingNodes.forEach(node => {
-      node.innerHTML = '<div class="drawio-error">mxGraph 未加载（请检查网络/CDN）</div>';
-      node.setAttribute('data-drawio-rendered', '0');
+      const error = document.createElement('div');
+      error.className = 'drawio-error';
+      error.textContent = String(e.message || e);
+      node.replaceChildren(error);
+      node.setAttribute('data-drawio-rendered', 'error');
     });
     throw e;
   }
 
   pendingNodes.forEach(node => {
+    if (!root.contains(node) || node.getAttribute('data-drawio-rendered') !== 'loading') return;
     const xml = node.querySelector('.drawio-source')?.textContent
       || node.getAttribute('data-drawio-xml')
       || '';
@@ -733,6 +571,33 @@ async function renderDrawioDiagrams(root) {
       return;
     }
 
+    let pages;
+    try {
+      pages = window.DiagramRenderer.parseDrawioPages(normalizeDrawioXml(xml));
+    } catch (error) {
+      const message = document.createElement('div');
+      message.className = 'drawio-error';
+      message.textContent = String(error.message || error);
+      const capture = node.querySelector('.drawio-capture');
+      (capture || node).replaceChildren(message);
+      node.setAttribute('data-drawio-rendered', 'error');
+      return;
+    }
+    if (pages.length > 1) {
+      const children = pages.map((page) => {
+        const child = node.cloneNode(true);
+        child.setAttribute('data-drawio-rendered', '0');
+        child.querySelector('.drawio-source').textContent = new XMLSerializer().serializeToString(page.doc);
+        const title = document.createElement('p');
+        title.className = 'drawio-page-title';
+        title.textContent = page.name;
+        child.querySelector('.drawio-wrap').prepend(title);
+        return child;
+      });
+      node.replaceWith(...children);
+      renderDrawioDiagrams(root).catch(error => console.error('draw.io render error:', error));
+      return;
+    }
     node.setAttribute('data-drawio-rendered', 'rendering');
 
     const capture = node.querySelector('.drawio-capture');
@@ -764,6 +629,15 @@ async function renderDrawioDiagrams(root) {
 
     // 关键：让 html=1 的 label 按 HTML 渲染（否则 <div> 会被当纯文本，导致宽度爆炸、整体被缩得很小）
     graph.setHtmlLabels(true);
+    const baseConvertValue = graph.convertValueToString;
+    graph.convertValueToString = function (cell) {
+      const label = baseConvertValue.call(this, cell);
+      return window.DOMPurify.sanitize(label, {
+        USE_PROFILES: { html: true },
+        FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select'],
+        FORBID_ATTR: ['style', 'name'],
+      });
+    };
     const baseIsHtmlLabel = graph.isHtmlLabel;
     graph.isHtmlLabel = function (cell) {
       try {
@@ -780,16 +654,16 @@ async function renderDrawioDiagrams(root) {
 
     graph.getModel().beginUpdate();
     try {
-      const normalized = normalizeDrawioXml(xml);
-
-      // 不直接用 mxUtils.parseXml：它遇到 parsererror 时后续 decode 会报 "a.push is not a function"
-      const doc = parseDrawioInputToMxGraphModelDocOrThrow(normalized);
+      const doc = pages[0].doc;
       const codec = new window.mxCodec(doc);
       codec.decode(doc.documentElement, graph.getModel());
     } catch (e) {
-      node.innerHTML = '<div class="drawio-error">draw.io XML 解析失败：' + String(e.message || e) + '</div>';
-      node.setAttribute('data-drawio-rendered', '0');
+      const error = document.createElement('div');
+      error.className = 'drawio-error';
+      error.textContent = 'draw.io XML 解析失败：' + String(e.message || e);
+      node.replaceChildren(error);
       try { graph.destroy(); } catch { }
+      node.setAttribute('data-drawio-rendered', 'error');
       return;
     } finally {
       graph.getModel().endUpdate();
@@ -797,6 +671,7 @@ async function renderDrawioDiagrams(root) {
 
     // 让布局稳定后再算 bounds/scale
     requestAnimationFrame(() => {
+      if (!root.contains(node)) { graph.destroy(); return; }
       try {
         const bounds = graph.getGraphBounds();
         const rawW = Math.max(1, Math.ceil(bounds.width + margin * 2));
@@ -853,8 +728,12 @@ async function renderDrawioDiagrams(root) {
         }
       } catch (e) {
         console.error('draw.io post-layout error:', e);
+        const error = document.createElement('p');
+        error.className = 'drawio-error';
+        error.textContent = String(e.message || e);
+        capture.replaceChildren(error);
       } finally {
-        node.setAttribute('data-drawio-rendered', '1');
+        node.setAttribute('data-drawio-rendered', node.querySelector('.drawio-error') ? 'error' : '1');
       }
     });
   });
@@ -954,21 +833,21 @@ function handleDrawioToolbarAction(node, action) {
   relayoutDrawio(node);
 }
 
-async function waitForDrawioRendered(root, { timeoutMs = 1800 } = {}) {
+async function waitForDrawioRendered(root, { timeoutMs = 20000 } = {}) {
   if (!root) return;
 
   // 触发一次渲染尝试（如果还没开始）
-  try {
-    renderDrawioDiagrams(root);
-  } catch { }
+  renderDrawioDiagrams(root).catch(error => console.error('draw.io render error:', error));
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    if (root.querySelector('.drawio-error')) throw new Error('draw.io 图表渲染失败，请先修正后导出。');
     const pending = Array.from(root.querySelectorAll('.drawio-diagram'))
       .some(el => el.getAttribute('data-drawio-rendered') !== '1');
     if (!pending) return;
     await new Promise(r => requestAnimationFrame(() => r()));
   }
+  throw new Error('draw.io 图表仍在加载，请稍后再导出。');
 }
 
 // 监听编辑器变化
@@ -978,7 +857,7 @@ editor.on("change", () => {
 });
 
 // 初始化 Mermaid
-mermaid.initialize({ startOnLoad: false, theme: 'default' });
+mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
 render();
 
 // 清空编辑器功能 - 使用自定义弹窗定位在按钮上方
@@ -1146,12 +1025,14 @@ function toggleWideMode() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       refreshEditorLayout();
+      outline.refreshLayout();
     });
   });
 
   if (!isWide) {
     setTimeout(refreshEditorLayout, 180);
   }
+  setTimeout(() => outline.refreshLayout(), 320);
 }
 
 // SVG 样式内联处理
@@ -1314,9 +1195,11 @@ async function exportWord() {
     const previewEl = document.getElementById('preview');
     // 防止 draw.io 图尚未渲染就导出导致丢图
     btn.innerText = '等待图表渲染...';
+    await diagrams.waitForReady(previewEl);
     await waitForDrawioRendered(previewEl);
+    if (previewEl.querySelector('.drawio-error')) throw new Error('draw.io 图表未成功渲染，请先修正再导出。');
 
-    const mermaidSvgs = Array.from(previewEl.querySelectorAll('.mermaid svg'));
+    const mermaidSvgs = Array.from(previewEl.querySelectorAll('.mermaid svg, .md-diagram-capture > svg, .md-diagram-capture > div > svg'));
     const drawioEls = Array.from(previewEl.querySelectorAll('.drawio-diagram'));
     const mermaidReplacements = [];
     const drawioReplacements = [];
@@ -1332,6 +1215,8 @@ async function exportWord() {
       const pngData = await svgToPng(mermaidSvgs[i]);
       if (pngData) {
         mermaidReplacements.push({ index: i, ...pngData });
+      } else if (mermaidSvgs[i].closest('.md-diagram')) {
+        throw new Error('图表转为 Word 图片失败，请检查图表后重试。');
       }
     }
 
@@ -1363,6 +1248,8 @@ async function exportWord() {
 
       if (pngData) {
         drawioReplacements.push({ index: i, ...pngData });
+      } else {
+        throw new Error('draw.io 转为 Word 图片失败，请检查图表后重试。');
       }
     }
 
@@ -1371,14 +1258,17 @@ async function exportWord() {
 
     const contentClone = previewEl.cloneNode(true);
 
-    const cloneMermaidSvgs = contentClone.querySelectorAll('.mermaid svg');
+    const cloneMermaidSvgs = contentClone.querySelectorAll('.mermaid svg, .md-diagram-capture > svg, .md-diagram-capture > div > svg');
     mermaidReplacements.forEach(item => {
       if (cloneMermaidSvgs[item.index]) {
         const img = document.createElement('img');
         img.src = item.data;
         img.width = item.width;
+        img.setAttribute('data-docx-block-image', '1');
         if (item.height) img.height = item.height;
-        cloneMermaidSvgs[item.index].parentNode.replaceChild(img, cloneMermaidSvgs[item.index]);
+        const diagram = cloneMermaidSvgs[item.index].closest('.md-diagram');
+        if (diagram) diagram.replaceWith(img);
+        else cloneMermaidSvgs[item.index].parentNode.replaceChild(img, cloneMermaidSvgs[item.index]);
       }
     });
 
@@ -1394,6 +1284,7 @@ async function exportWord() {
       }
     });
 
+    contentClone.querySelectorAll('.md-diagram-source, .md-diagram-status[hidden]').forEach(el => el.remove());
     contentClone.querySelectorAll('svg').forEach(el => el.remove());
 
     // KaTeX：导出到 Word 时将公式转为图片，避免变成源码文本
@@ -1693,6 +1584,10 @@ async function inlineNodeToDocxRunsAsync(node, inherited = {}) {
   if (tag === 'STRONG' || tag === 'B') next.bold = true;
   if (tag === 'EM' || tag === 'I') next.italics = true;
   if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') next.strike = true;
+  if (tag === 'SUB') next.subScript = true;
+  if (tag === 'SUP') next.superScript = true;
+  if (tag === 'MARK') next.highlight = 'yellow';
+  if (tag === 'INS' || tag === 'U') next.underline = {};
   if (tag === 'CODE') next.font = next.font || 'Courier New';
 
   const runs = [];

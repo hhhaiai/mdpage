@@ -36,6 +36,10 @@ test('buildSite creates a complete static bundle for both hosting platforms', as
     'index.html',
     'css/style.css',
     'imgage/icon.ico',
+    'js/markdown-compat.js',
+    'js/diagram-renderer.js',
+    'js/diagram-worker.js',
+    'js/image-cdn.js',
     'js/app.js',
     '_headers',
     '_redirects',
@@ -146,6 +150,9 @@ test('all local entry assets resolve under root and GitHub Pages project paths',
   assert.deepEqual(localAssets.map((asset) => asset.split('?')[0]), [
     'imgage/icon.ico',
     'css/style.css',
+    'js/markdown-compat.js',
+    'js/diagram-renderer.js',
+    'js/image-cdn.js',
     'js/app.js',
   ]);
 
@@ -168,4 +175,34 @@ test('repository ignores generated and local deployment files', async () => {
   assert.match(gitignore, /^dist\/$/m);
   assert.match(gitignore, /^\.wrangler\/$/m);
   assert.match(gitignore, /^\.env\.\*$/m);
+});
+
+test('browser Markdown libraries and deterministic tests use matching pinned versions', async () => {
+  const [indexHtml, packageText] = await Promise.all([
+    readFile(path.join(projectRoot, 'index.html'), 'utf8'),
+    readFile(path.join(projectRoot, 'package.json'), 'utf8'),
+  ]);
+  const { devDependencies } = JSON.parse(packageText);
+  const pinned = [...indexHtml.matchAll(/https:\/\/cdn\.jsdelivr\.net\/npm\/((?:markdown-it[^@/]*)|dompurify)@([^/]+)\//g)];
+  const expected = Object.keys(devDependencies).filter((name) => name.startsWith('markdown-it') || name === 'dompurify');
+  assert.deepEqual(pinned.map((match) => match[1]).sort(), expected.sort());
+  for (const [, name, version] of pinned) assert.equal(version, devDependencies[name], name);
+  assert.ok(indexHtml.indexOf('js/markdown-compat.js') < indexHtml.indexOf('js/app.js'));
+});
+
+test('lazy diagram libraries use tested versions and worker stays inside project paths', async () => {
+  const [source, worker, packageText] = await Promise.all([
+    readFile(path.join(projectRoot, 'js/diagram-renderer.js'), 'utf8'),
+    readFile(path.join(projectRoot, 'js/diagram-worker.js'), 'utf8'),
+    readFile(path.join(projectRoot, 'package.json'), 'utf8'),
+  ]);
+  const { devDependencies } = JSON.parse(packageText);
+  const entries = [...(source + worker).matchAll(/https:\/\/cdn\.jsdelivr\.net\/npm\/(@viz-js\/viz|echarts|json5|pako)@([^/]+)\//g)];
+  assert.deepEqual(entries.map((match) => match[1]).sort(), ['@viz-js/viz', 'echarts', 'json5', 'pako']);
+  for (const [, name, version] of entries) assert.equal(version, devDependencies[name], name);
+  for (const base of ['https://example.test/', 'https://example.test/mdpage/']) {
+    const script = new URL('js/diagram-renderer.js', base);
+    const worker = new URL('diagram-worker.js', script);
+    assert.equal(worker.href, base + 'js/diagram-worker.js');
+  }
 });
